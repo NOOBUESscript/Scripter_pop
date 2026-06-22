@@ -1,0 +1,1585 @@
+--[[
+    SilentSnipers - Slap Battles (FIXED)
+]]
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local viewport = workspace.CurrentCamera.ViewportSize
+local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+
+-- ==================== CONFIG ====================
+local Config = {
+    Title = "SilentSnipers",
+    Version = "v2.0",
+    Creator = "@SilentYosF",
+    KeyLink = "https://discord.gg/RGEHQ5STuq",
+    DiscordLink = "https://discord.gg/RGEHQ5STuq",
+    
+    -- Images
+    SSLogoImage = "rbxassetid://93741262913208",
+    KeySystemLogo = "rbxassetid://93741262913208",
+    MainGUIBackground = "rbxassetid://122232130746627",
+    BackgroundTransparency = 0.65,
+    ToggleImageOn = "rbxassetid://137851986085817",
+    ToggleImageOff = "rbxassetid://137851986085817",
+    ToggleButtonSize = 50,
+    
+    -- Tab Images
+    TabImages = {
+        Home = "rbxassetid://126145724330481",
+        Combat = "rbxassetid://132682765079321",
+        Script = "rbxassetid://83100833326279",
+        Visuals = "rbxassetid://101820356268537",
+        Player = "rbxassetid://73047611440625",
+        Teleport = "rbxassetid://124893347421019",
+        Misc = "rbxassetid://100400457483755",
+        Updates = "rbxassetid://133291037859723",
+        Settings = "rbxassetid://101583063613710",
+        Credits = "rbxassetid://136668612709454"
+    },
+    
+    -- Tab Names
+    TabNames = {"Home", "Combat", "Script", "Visuals", "Player", "Teleport", "Misc", "Updates", "Settings", "Credits"},
+    
+    -- Keys
+    ActiveKeys = {"Test", "PREMIUM-AAAA-BBBB-CCCC", "DEV-KEY-FOR-TESTING"},
+    ExpiredKeys = {"OLD-EXPIRED-KEY"},
+    BannedKeys = {"BANNED-KEY"},
+    
+    -- Colors
+    Bg = Color3.fromRGB(5, 6, 7),
+    Sidebar = Color3.fromRGB(25, 28, 35),
+    SidebarBtn = Color3.fromRGB(40, 45, 55),
+    Card = Color3.fromRGB(15, 18, 25),
+    CardBorder = Color3.fromRGB(35, 40, 55),
+    TitleBar = Color3.fromRGB(12, 14, 20),
+    BottomBar = Color3.fromRGB(8, 10, 14),
+    Accent = Color3.fromRGB(0, 175, 255),
+    AccentDim = Color3.fromRGB(60, 60, 70),
+    AccentGlow = Color3.fromRGB(0, 200, 255),
+    Success = Color3.fromRGB(0, 255, 140),
+    Error = Color3.fromRGB(255, 70, 90),
+    Warning = Color3.fromRGB(255, 180, 0),
+    Text = Color3.fromRGB(255, 255, 255),
+    TextDim = Color3.fromRGB(200, 200, 200),
+    TextMuted = Color3.fromRGB(150, 150, 150),
+    Input = Color3.fromRGB(20, 22, 28)
+}
+
+-- ==================== UTILITIES ====================
+local function Make(class, props)
+    local inst = Instance.new(class)
+    for k, v in pairs(props) do inst[k] = v end
+    return inst
+end
+
+local function AddCorner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = parent
+    return c
+end
+
+local function AddPadding(parent, t, b, l, r)
+    local p = Instance.new("UIPadding")
+    p.PaddingTop = UDim.new(0, t or 0)
+    p.PaddingBottom = UDim.new(0, b or 0)
+    p.PaddingLeft = UDim.new(0, l or 0)
+    p.PaddingRight = UDim.new(0, r or 0)
+    p.Parent = parent
+    return p
+end
+
+local function Tween(obj, props, duration)
+    local info = TweenInfo.new(duration or 0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local t = TweenService:Create(obj, info, props)
+    t:Play()
+    return t
+end
+
+local function CopyToClipboard(text)
+    pcall(function()
+        if setclipboard then setclipboard(text)
+        elseif toclipboard then toclipboard(text) end
+    end)
+end
+
+local function Shake(gui)
+    for i = 1, 4 do
+        Tween(gui, {Position = UDim2.new(gui.Position.X.Scale, gui.Position.X.Offset + 6, gui.Position.Y.Scale, gui.Position.Y.Offset)}, 0.04)
+        wait(0.04)
+        Tween(gui, {Position = UDim2.new(gui.Position.X.Scale, gui.Position.X.Offset - 6, gui.Position.Y.Scale, gui.Position.Y.Offset)}, 0.04)
+        wait(0.04)
+    end
+end
+
+local function LoadImage(parent, imageId, size, fallback)
+    local loaded = false
+    if imageId and imageId ~= "" then
+        local success = pcall(function()
+            Make("ImageLabel", {
+                Size = size,
+                BackgroundTransparency = 1,
+                Image = imageId,
+                ScaleType = Enum.ScaleType.Fit,
+                Parent = parent
+            })
+            loaded = true
+        end)
+    end
+    if not loaded then
+        Make("TextLabel", {
+            Size = size,
+            BackgroundTransparency = 1,
+            Text = fallback or "?",
+            TextColor3 = Config.Text,
+            TextSize = 16,
+            Font = Enum.Font.GothamBold,
+            Parent = parent
+        })
+    end
+end
+
+local function Fire(remote, ...)
+    pcall(function() remote:FireServer(...) end)
+end
+
+-- ==================== GLOBAL STATE ====================
+local toggleStates = {}
+local sliderValues = {}
+local inputValues = {}
+local MainGUIMainFrame = nil
+local isGUIVisible = false
+
+-- ==================== KEY SYSTEM ====================
+
+local function CheckKeyStatus(key)
+    key = key:upper()
+    for _, k in ipairs(Config.ActiveKeys) do
+        if k:upper() == key then return "active" end
+    end
+    for _, k in ipairs(Config.ExpiredKeys) do
+        if k:upper() == key then return "expired" end
+    end
+    for _, k in ipairs(Config.BannedKeys) do
+        if k:upper() == key then return "banned" end
+    end
+    return "invalid"
+end
+
+local function ShowKeySystem(onSuccess)
+    if player.PlayerGui:FindFirstChild("SilentKeySystem") then
+        player.PlayerGui.SilentKeySystem:Destroy()
+    end
+    
+    local ScreenGui = Make("ScreenGui", {
+        Name = "SilentKeySystem",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        Parent = player.PlayerGui
+    })
+    
+    local winWidth = math.min(viewport.X * 0.92, 380)
+    local winHeight = math.min(viewport.Y * 0.75, 480)
+    local s = winWidth / 420
+    
+    -- Overlay
+    local Overlay = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        Parent = ScreenGui
+    })
+    
+    -- Main window
+    local Main = Make("Frame", {
+        Size = UDim2.new(0, 0, 0, 0),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundColor3 = Config.Bg,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        Parent = ScreenGui
+    })
+    AddCorner(Main, 14)
+    Instance.new("UIStroke", Main).Color = Config.Accent
+    
+    -- Top accent
+    Make("Frame", {
+        Size = UDim2.new(1, 0, 0, 60 * s),
+        BackgroundColor3 = Config.Accent,
+        BackgroundTransparency = 0.92,
+        BorderSizePixel = 0,
+        Parent = Main
+    })
+    
+    -- Logo
+    local LogoFrame = Make("Frame", {
+        Size = UDim2.new(0, 40 * s, 0, 40 * s),
+        Position = UDim2.new(0, 14 * s, 0, 35 * s),
+        BackgroundTransparency = 1,
+        Parent = Main
+    })
+    AddCorner(LogoFrame, 20 * s)
+    LoadImage(LogoFrame, Config.KeySystemLogo, UDim2.new(1, 0, 1, 0), "S")
+    
+    -- Title
+    Make("TextLabel", {
+        Size = UDim2.new(1, -80 * s, 0, 20 * s),
+        Position = UDim2.new(0, 62 * s, 0, 12 * s),
+        BackgroundTransparency = 1,
+        Text = Config.Title,
+        TextColor3 = Config.Text, TextSize = 14 * s,
+        Font = Enum.Font.GothamBlack,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Main
+    })
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, -80 * s, 0, 14 * s),
+        Position = UDim2.new(0, 62 * s, 0, 34 * s),
+        BackgroundTransparency = 1,
+        Text = "Premium Script Hub • " .. Config.Version,
+        TextColor3 = Config.TextMuted, TextSize = 10 * s,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Main
+    })
+    
+    -- Status
+    local StatusDot = Make("Frame", {
+        Size = UDim2.new(0, 8 * s, 0, 8 * s),
+        Position = UDim2.new(1, -75 * s, 0, 40 * s),
+        BackgroundColor3 = Config.Warning,
+        BorderSizePixel = 0,
+        Parent = Main
+    })
+    AddCorner(StatusDot, 4)
+    
+    Make("TextLabel", {
+        Size = UDim2.new(0, 60 * s, 0, 12 * s),
+        Position = UDim2.new(1, -65 * s, 0, 38 * s),
+        BackgroundTransparency = 1,
+        Text = "LOCKED",
+        TextColor3 = Config.Warning, TextSize = 9 * s,
+        Font = Enum.Font.GothamBlack,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Main
+    })
+    
+    -- Welcome text
+    local yPos = 90 * s
+    Make("TextLabel", {
+        Size = UDim2.new(1, -30 * s, 0, 22 * s),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundTransparency = 1,
+        Text = "Welcome Back! 👋",
+        TextColor3 = Config.Text, TextSize = 18 * s,
+        Font = Enum.Font.GothamBlack,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Main
+    })
+    yPos = yPos + 26 * s
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, -30 * s, 0, 14 * s),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundTransparency = 1,
+        Text = "Enter your license key to unlock",
+        TextColor3 = Config.TextDim, TextSize = 10 * s,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Main
+    })
+    yPos = yPos + 20 * s
+    
+    -- Key input
+    local InputCard = Make("Frame", {
+        Size = UDim2.new(1, -30 * s, 0, 50 * s),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundColor3 = Config.Card,
+        BorderSizePixel = 1,
+        BorderColor3 = Config.CardBorder,
+        Parent = Main
+    })
+    AddCorner(InputCard, 10)
+    
+    Make("TextLabel", {
+        Size = UDim2.new(0, 20 * s, 0, 20 * s),
+        Position = UDim2.new(0, 10 * s, 0, 8 * s),
+        BackgroundTransparency = 1,
+        Text = "🔑", TextSize = 14 * s,
+        Parent = InputCard
+    })
+    
+    local KeyInput = Make("TextBox", {
+        Size = UDim2.new(1, -20 * s, 0, 24 * s),
+        Position = UDim2.new(0, 10 * s, 0, 22 * s),
+        BackgroundTransparency = 1,
+        Text = "",
+        PlaceholderText = "Enter your key...",
+        PlaceholderColor3 = Config.TextMuted,
+        TextColor3 = Config.Text,
+        TextSize = 13 * s,
+        Font = Enum.Font.Code,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ClearTextOnFocus = false,
+        Parent = InputCard
+    })
+    yPos = yPos + 60 * s
+    
+    -- Error label
+    local ErrorLabel = Make("TextLabel", {
+        Size = UDim2.new(1, -30 * s, 0, 14 * s),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundTransparency = 1,
+        Text = "", TextSize = 9 * s,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Visible = false, Parent = Main
+    })
+    yPos = yPos + 18 * s
+    
+    -- Get key button
+    local btnH = 36 * s
+    local GetKeyBtn = Make("TextButton", {
+        Size = UDim2.new(1, -30 * s, 0, btnH),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundColor3 = Config.Card,
+        BorderSizePixel = 1,
+        BorderColor3 = Config.Accent,
+        Text = "🔗  GET KEY  (Copy Link)",
+        TextColor3 = Config.Accent, TextSize = 11 * s,
+        Font = Enum.Font.GothamBold,
+        AutoButtonColor = false,
+        Parent = Main
+    })
+    AddCorner(GetKeyBtn, 8)
+    
+    GetKeyBtn.MouseButton1Click:Connect(function()
+        CopyToClipboard(Config.KeyLink)
+        GetKeyBtn.Text = "✓  COPIED!"
+        Tween(GetKeyBtn, {BackgroundColor3 = Config.Success, BorderColor3 = Config.Success, TextColor3 = Config.Text}, 0.3)
+        wait(1.5)
+        GetKeyBtn.Text = "🔗  GET KEY"
+        Tween(GetKeyBtn, {BackgroundColor3 = Config.Card, BorderColor3 = Config.Accent, TextColor3 = Config.Accent}, 0.3)
+    end)
+    yPos = yPos + btnH + 6 * s
+    
+    -- Login button
+    local LoginBtn = Make("TextButton", {
+        Size = UDim2.new(1, -30 * s, 0, btnH),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundColor3 = Config.Accent,
+        BorderSizePixel = 0,
+        Text = "✓  LOGIN",
+        TextColor3 = Config.Text, TextSize = 12 * s,
+        Font = Enum.Font.GothamBold,
+        AutoButtonColor = false,
+        Parent = Main
+    })
+    AddCorner(LoginBtn, 8)
+    yPos = yPos + btnH + 8 * s
+    
+    -- Warning
+    local WarnCard = Make("Frame", {
+        Size = UDim2.new(1, -30 * s, 0, 65 * s),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundColor3 = Color3.fromRGB(35, 25, 12),
+        BorderSizePixel = 1,
+        BorderColor3 = Config.Warning,
+        Parent = Main
+    })
+    AddCorner(WarnCard, 8)
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, -20 * s, 0, 50 * s),
+        Position = UDim2.new(0, 10 * s, 0, 6 * s),
+        BackgroundTransparency = 1,
+        Text = "⚠️ WARNING\n• Don't share your key\n• Reselling = ban",
+        TextColor3 = Config.Warning, TextSize = 9 * s,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        Parent = WarnCard
+    })
+    yPos = yPos + 73 * s
+    
+    -- Info buttons
+    local infoH = 30 * s
+    local InfoBar = Make("Frame", {
+        Size = UDim2.new(1, -30 * s, 0, infoH),
+        Position = UDim2.new(0, 15 * s, 0, yPos),
+        BackgroundTransparency = 1,
+        Parent = Main
+    })
+    
+    local function MakeInfoBtn(x, width, icon, text, color, callback)
+        local btn = Make("TextButton", {
+            Size = UDim2.new(0, width, 0, infoH),
+            Position = UDim2.new(0, x, 0, 0),
+            BackgroundColor3 = Config.Card,
+            BorderSizePixel = 1,
+            BorderColor3 = Config.CardBorder,
+            Text = "", AutoButtonColor = false,
+            Parent = InfoBar
+        })
+        AddCorner(btn, 8)
+        Make("TextLabel", {
+            Size = UDim2.new(0, 20 * s, 1, 0),
+            Position = UDim2.new(0, 6 * s, 0, 0),
+            BackgroundTransparency = 1,
+            Text = icon, TextSize = 12 * s,
+            Parent = btn
+        })
+        Make("TextLabel", {
+            Size = UDim2.new(1, -30 * s, 1, 0),
+            Position = UDim2.new(0, 28 * s, 0, 0),
+            BackgroundTransparency = 1,
+            Text = text, TextColor3 = color,
+            TextSize = 9 * s,
+            Font = Enum.Font.GothamBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = btn
+        })
+        if callback then
+            btn.MouseButton1Click:Connect(callback)
+        end
+    end
+    
+    local halfW = (winWidth - 36 * s) / 2
+    MakeInfoBtn(0, halfW, "🎮", Config.Creator, Config.Accent)
+    MakeInfoBtn(halfW + 6 * s, halfW, "💬", "Discord", Color3.fromRGB(88, 101, 242), function()
+        CopyToClipboard(Config.DiscordLink)
+    end)
+    
+    -- Footer
+    Make("TextLabel", {
+        Size = UDim2.new(1, -30 * s, 0, 12 * s),
+        Position = UDim2.new(0, 15 * s, 1, -18 * s),
+        BackgroundTransparency = 1,
+        Text = "🔒 Secured • " .. Config.Creator,
+        TextColor3 = Config.TextMuted, TextSize = 8 * s,
+        Font = Enum.Font.Gotham,
+        Parent = Main
+    })
+    
+    -- Open animation
+    Tween(Main, {Size = UDim2.new(0, winWidth, 0, winHeight)}, 0.6, Enum.EasingStyle.Back)
+    
+    -- Login logic
+    LoginBtn.MouseButton1Click:Connect(function()
+        local key = KeyInput.Text:gsub("%s+", "")
+        if key == "" then
+            ErrorLabel.Text = "⚠ Enter a key!"
+            ErrorLabel.TextColor3 = Config.Error
+            ErrorLabel.Visible = true
+            Shake(InputCard)
+            return
+        end
+        
+        LoginBtn.Text = "⟳  CHECKING..."
+        Tween(LoginBtn, {BackgroundColor3 = Config.Warning}, 0.2)
+        wait(1)
+        
+        local status = CheckKeyStatus(key)
+        if status == "active" then
+            LoginBtn.Text = "✓  SUCCESS!"
+            Tween(LoginBtn, {BackgroundColor3 = Config.Success}, 0.3)
+            pcall(function() if writefile then writefile("SilentSnipers_Key.txt", key) end end)
+            wait(1)
+            Tween(Main, {Size = UDim2.new(0, winWidth, 0, 0), BackgroundTransparency = 1}, 0.5, Enum.EasingStyle.Back)
+            wait(0.6)
+            ScreenGui:Destroy()
+            wait(0.2)
+            if onSuccess then onSuccess() end
+        elseif status == "expired" then
+            LoginBtn.Text = "⏰  EXPIRED"
+            Tween(LoginBtn, {BackgroundColor3 = Config.Warning}, 0.3)
+            ErrorLabel.Text = "⏰ Key expired!"
+            ErrorLabel.TextColor3 = Config.Warning
+            ErrorLabel.Visible = true
+            wait(2)
+            LoginBtn.Text = "✓  LOGIN"
+            Tween(LoginBtn, {BackgroundColor3 = Config.Accent}, 0.3)
+        elseif status == "banned" then
+            LoginBtn.Text = "🚫  BANNED"
+            Tween(LoginBtn, {BackgroundColor3 = Config.Error}, 0.3)
+            ErrorLabel.Text = "🚫 Key banned!"
+            ErrorLabel.TextColor3 = Config.Error
+            ErrorLabel.Visible = true
+            wait(2)
+            LoginBtn.Text = "✓  LOGIN"
+            Tween(LoginBtn, {BackgroundColor3 = Config.Accent}, 0.3)
+        else
+            LoginBtn.Text = "✗  INVALID"
+            Tween(LoginBtn, {BackgroundColor3 = Config.Error}, 0.3)
+            ErrorLabel.Text = "✗ Invalid key!"
+            ErrorLabel.TextColor3 = Config.Error
+            ErrorLabel.Visible = true
+            wait(2)
+            LoginBtn.Text = "✓  LOGIN"
+            Tween(LoginBtn, {BackgroundColor3 = Config.Accent}, 0.3)
+        end
+    end)
+    
+    -- Load saved key
+    pcall(function()
+        if readfile and isfile and isfile("SilentSnipers_Key.txt") then
+            KeyInput.Text = readfile("SilentSnipers_Key.txt")
+        end
+    end)
+end
+
+-- ==================== COMPONENT FUNCTIONS ====================
+
+local function CreateToggle(parent, x, y, width, label, key, default, scale)
+    scale = scale or 1
+    local row = Make("Frame", {
+        Size = UDim2.new(0, width, 0, 22 * scale),
+        Position = UDim2.new(0, x, 0, y),
+        BackgroundTransparency = 1, Parent = parent
+    })
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, -32 * scale, 1, 0),
+        BackgroundTransparency = 1,
+        Text = label, TextColor3 = Config.TextDim,
+        TextSize = 12 * scale,
+        Font = Enum.Font.SourceSans,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = row
+    })
+    
+    local btn = Make("TextButton", {
+        Size = UDim2.new(0, 26 * scale, 0, 14 * scale),
+        Position = UDim2.new(1, -28 * scale, 0.5, -7 * scale),
+        BackgroundColor3 = default and Config.Accent or Config.AccentDim,
+        BorderSizePixel = 0, Text = "", Parent = row
+    })
+    AddCorner(btn, 7)
+    
+    local knob = Make("Frame", {
+        Size = UDim2.new(0, 10 * scale, 0, 10 * scale),
+        Position = default and UDim2.new(1, -12 * scale, 0.5, -5 * scale) or UDim2.new(0, 2, 0.5, -5 * scale),
+        BackgroundColor3 = Config.Text,
+        BorderSizePixel = 0, Parent = btn
+    })
+    AddCorner(knob, 5)
+    
+    toggleStates[key] = default or false
+    
+    btn.MouseButton1Click:Connect(function()
+        local state = not toggleStates[key]
+        toggleStates[key] = state
+        Tween(btn, {BackgroundColor3 = state and Config.Accent or Config.AccentDim}, 0.2)
+        Tween(knob, {Position = state and UDim2.new(1, -12 * scale, 0.5, -5 * scale) or UDim2.new(0, 2, 0.5, -5 * scale)}, 0.2)
+    end)
+end
+
+local function CreateSlider(parent, x, y, width, label, key, default, minV, maxV, scale)
+    scale = scale or 1
+    minV = minV or 0
+    maxV = maxV or 100
+    
+    Make("TextLabel", {
+        Size = UDim2.new(0, width * 0.5, 0, 16 * scale),
+        Position = UDim2.new(0, x, 0, y),
+        BackgroundTransparency = 1,
+        Text = label, TextColor3 = Config.TextDim,
+        TextSize = 12 * scale,
+        Font = Enum.Font.SourceSans,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = parent
+    })
+    
+    local valTxt = Make("TextLabel", {
+        Size = UDim2.new(0, 50 * scale, 0, 16 * scale),
+        Position = UDim2.new(0, x + width - 50 * scale, 0, y),
+        BackgroundTransparency = 1,
+        Text = tostring(default), TextColor3 = Config.TextDim,
+        TextSize = 12 * scale,
+        Font = Enum.Font.SourceSans,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Parent = parent
+    })
+    
+    local track = Make("Frame", {
+        Size = UDim2.new(0, width, 0, 4 * scale),
+        Position = UDim2.new(0, x, 0, y + 22 * scale),
+        BackgroundColor3 = Config.AccentDim,
+        BorderSizePixel = 0, Parent = parent
+    })
+    AddCorner(track, 2)
+    
+    local pct = (default - minV) / (maxV - minV)
+    local fill = Make("Frame", {
+        Size = UDim2.new(pct, 0, 1, 0),
+        BackgroundColor3 = Config.Accent,
+        BorderSizePixel = 0, Parent = track
+    })
+    AddCorner(fill, 2)
+    
+    local knob = Make("TextButton", {
+        Size = UDim2.new(0, 14 * scale, 0, 14 * scale),
+        Position = UDim2.new(pct, -7 * scale, 0.5, -7 * scale),
+        BackgroundColor3 = Config.Accent,
+        BorderSizePixel = 0, Text = "", Parent = track
+    })
+    AddCorner(knob, 7)
+    
+    sliderValues[key] = default
+    local dragging = false
+    
+    knob.MouseButton1Down:Connect(function() dragging = true end)
+    
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local p = math.clamp((UIS:GetMouseLocation().X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+            local v = math.floor(minV + p * (maxV - minV))
+            fill.Size = UDim2.new(p, 0, 1, 0)
+            knob.Position = UDim2.new(p, -7 * scale, 0.5, -7 * scale)
+            valTxt.Text = tostring(v)
+            sliderValues[key] = v
+        end
+    end)
+    
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+local function CreateButton(parent, x, y, width, label, callback, scale)
+    scale = scale or 1
+    local btn = Make("TextButton", {
+        Size = UDim2.new(0, width, 0, 24 * scale),
+        Position = UDim2.new(0, x, 0, y),
+        BackgroundColor3 = Config.Accent,
+        BorderSizePixel = 0,
+        Text = label, TextColor3 = Config.Text,
+        TextSize = 11 * scale,
+        Font = Enum.Font.SourceSansBold,
+        AutoButtonColor = false,
+        Parent = parent
+    })
+    AddCorner(btn, 4)
+    if callback then btn.MouseButton1Click:Connect(callback) end
+end
+
+local function CreateInput(parent, x, y, width, label, key, placeholder, scale)
+    scale = scale or 1
+    Make("TextLabel", {
+        Size = UDim2.new(0, width, 0, 14 * scale),
+        Position = UDim2.new(0, x, 0, y),
+        BackgroundTransparency = 1,
+        Text = label, TextColor3 = Config.TextDim,
+        TextSize = 11 * scale,
+        Font = Enum.Font.SourceSans,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = parent
+    })
+    
+    local box = Make("TextBox", {
+        Size = UDim2.new(0, width, 0, 24 * scale),
+        Position = UDim2.new(0, x, 0, y + 16 * scale),
+        BackgroundColor3 = Config.Input,
+        BorderSizePixel = 1,
+        BorderColor3 = Config.CardBorder,
+        Text = "",
+        PlaceholderText = placeholder or "",
+        PlaceholderColor3 = Config.TextMuted,
+        TextColor3 = Config.Text,
+        TextSize = 11 * scale,
+        Font = Enum.Font.SourceSans,
+        ClearTextOnFocus = false,
+        Parent = parent
+    })
+    AddCorner(box, 4)
+    AddPadding(box, 0, 0, 6 * scale, 6 * scale)
+    
+    inputValues[key] = ""
+    box.FocusLost:Connect(function() inputValues[key] = box.Text end)
+end
+
+local function CreateCard(parent, y, title, height)
+    local card = Make("Frame", {
+        Size = UDim2.new(1, 0, 0, height or 100),
+        Position = UDim2.new(0, 0, 0, y),
+        BackgroundColor3 = Config.Card,
+        BorderSizePixel = 1,
+        BorderColor3 = Config.CardBorder,
+        Parent = parent
+    })
+    AddCorner(card, 6)
+    AddPadding(card, 8, 8, 8, 8)
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 22),
+        BackgroundTransparency = 1,
+        Text = title, TextColor3 = Config.Text,
+        TextSize = 14,
+        Font = Enum.Font.SourceSansBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = card
+    })
+    return card
+end
+
+-- ==================== MAIN GUI ====================
+
+local function ShowMainGUI()
+    if player.PlayerGui:FindFirstChild("SilentSnipersGUI") then
+        player.PlayerGui.SilentSnipersGUI:Destroy()
+    end
+    
+    local baseWidth = isMobile and math.min(viewport.X * 0.92, 360) or math.min(420, viewport.X * 0.9)
+    local baseHeight = isMobile and math.min(viewport.Y * 0.85, 550) or baseWidth * (980/1450)
+    local cardWidth = baseWidth - 75
+    local cardHeight = cardWidth * (470/500)
+    local uiScale = baseWidth / 420
+    
+    local ScreenGui = Make("ScreenGui", {
+        Name = "SilentSnipersGUI",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        Parent = player.PlayerGui
+    })
+    
+    local mainFrame = Make("Frame", {
+        Name = "MainFrame",
+        Size = UDim2.new(0, baseWidth, 0, baseHeight),
+        Position = UDim2.new(0.5, -baseWidth/2, 0.5, -baseHeight/2),
+        BackgroundColor3 = Config.Bg,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        Active = true, Draggable = true,
+        Parent = ScreenGui
+    })
+    AddCorner(mainFrame, 12)
+    MainGUIMainFrame = mainFrame
+    
+    -- Background
+    if Config.MainGUIBackground ~= "" then
+        pcall(function()
+            Make("ImageLabel", {
+                Name = "Background",
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Image = Config.MainGUIBackground,
+                ImageTransparency = Config.BackgroundTransparency,
+                ScaleType = Enum.ScaleType.Crop,
+                ZIndex = -1,
+                Parent = mainFrame
+            })
+        end)
+    end
+    
+    Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromRGB(5, 6, 7),
+        BackgroundTransparency = 0.5,
+        BorderSizePixel = 0,
+        ZIndex = 0,
+        Parent = mainFrame
+    })
+    
+    -- Sidebar
+    local sidebarW = isMobile and 45 or 60
+    local sidebar = Make("Frame", {
+        Size = UDim2.new(0, sidebarW, 1, 0),
+        BackgroundColor3 = Config.Sidebar,
+        BorderSizePixel = 0, Parent = mainFrame
+    })
+    AddCorner(sidebar, 12)
+    Make("Frame", {
+        Size = UDim2.new(1, 0, 0, 15),
+        Position = UDim2.new(0, 0, 1, -15),
+        BackgroundColor3 = Config.Sidebar,
+        BorderSizePixel = 0, Parent = sidebar
+    })
+    
+    local ssLogoFrame = Make("Frame", {
+        Size = UDim2.new(1, 0, 0, 30),
+        Position = UDim2.new(0, 0, 0, 4),
+        BackgroundTransparency = 1, Parent = sidebar
+    })
+    LoadImage(ssLogoFrame, Config.SSLogoImage, UDim2.new(0.8, 0, 1, 0), "SS")
+    
+    local sidebarScroll = Make("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, -75),
+        Position = UDim2.new(0, 0, 0, 38),
+        BackgroundTransparency = 1,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = Config.Accent,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.new(0, 0, 0, 400),
+        Parent = sidebar
+    })
+    
+    local sbLayout = Make("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        Padding = UDim.new(0, 4),
+        Parent = sidebarScroll
+    })
+    
+    local tabButtons = {}
+    local tabs = {}
+    
+    -- Create tab buttons
+    for i, name in ipairs(Config.TabNames) do
+        local btn = Make("TextButton", {
+            Size = UDim2.new(1, -6, 0, 30 * uiScale),
+            BackgroundColor3 = Config.SidebarBtn,
+            BorderSizePixel = 0, Text = "",
+            AutoButtonColor = false,
+            LayoutOrder = i,
+            Parent = sidebarScroll
+        })
+        AddCorner(btn, 6)
+        
+        local IconContainer = Make("Frame", {
+            Size = UDim2.new(0.85, 0, 0.85, 0),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundTransparency = 1,
+            Parent = btn
+        })
+        
+        LoadImage(IconContainer, Config.TabImages[name], UDim2.new(1, 0, 1, 0), "?")
+        
+        tabButtons[name] = btn
+    end
+    
+    -- Title bar
+    local titleBar = Make("Frame", {
+        Size = UDim2.new(1, -sidebarW, 0, 38 * uiScale),
+        Position = UDim2.new(0, sidebarW, 0, 0),
+        BackgroundColor3 = Config.TitleBar,
+        BorderSizePixel = 0, Parent = mainFrame
+    })
+    
+    Make("TextLabel", {
+        Size = UDim2.new(0.7, 0, 0, 20 * uiScale),
+        Position = UDim2.new(0, 12 * uiScale, 0, 2),
+        BackgroundTransparency = 1,
+        Text = "SilentSnipers",
+        TextColor3 = Config.Text, TextSize = 14 * uiScale,
+        Font = Enum.Font.SourceSansBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = titleBar
+    })
+    
+    Make("TextLabel", {
+        Size = UDim2.new(0.3, 0, 0, 12 * uiScale),
+        Position = UDim2.new(1, -10, 0, 4),
+        BackgroundTransparency = 1,
+        Text = "Slap Battles",
+        TextColor3 = Config.Accent, TextSize = 10 * uiScale,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Parent = titleBar
+    })
+    
+    Make("TextLabel", {
+        Size = UDim2.new(0.7, 0, 0, 12 * uiScale),
+        Position = UDim2.new(0, 12 * uiScale, 0, 22 * uiScale),
+        BackgroundTransparency = 1,
+        Text = "Slapbattles",
+        TextColor3 = Config.TextMuted, TextSize = 10 * uiScale,
+        Font = Enum.Font.SourceSans,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = titleBar
+    })
+    
+    -- Tab container
+    local tabContainer = Make("Frame", {
+        Size = UDim2.new(1, -sidebarW, 1, -78 * uiScale),
+        Position = UDim2.new(0, sidebarW, 0, 38 * uiScale),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        Parent = mainFrame
+    })
+    
+    local scroll = Make("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Config.Accent,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.new(0, 0, 0, 1200),
+        Parent = tabContainer
+    })
+    AddPadding(scroll, 6, 6, 6, 6)
+    
+    local toggleWidth = (cardWidth - 24) / 2
+    
+    -- HOME TAB
+    local homeTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Visible = true, Parent = scroll
+    })
+    
+    -- Player Info Card
+    local infoCard = Make("Frame", {
+        Size = UDim2.new(1, 0, 0, 50 * uiScale),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Config.Card,
+        BorderSizePixel = 1,
+        BorderColor3 = Config.CardBorder,
+        Parent = homeTab
+    })
+    AddCorner(infoCard, 6)
+    AddPadding(infoCard, 8, 8, 8, 8)
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 16),
+        BackgroundTransparency = 1,
+        Text = "📊 Player Info",
+        TextColor3 = Config.Text, TextSize = 11,
+        Font = Enum.Font.SourceSansBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = infoCard
+    })
+    
+    local infoLabel = Make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 18),
+        Position = UDim2.new(0, 0, 0, 22),
+        BackgroundTransparency = 1,
+        Text = "Loading...",
+        TextColor3 = Config.Accent, TextSize = 10,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = infoCard
+    })
+    
+    task.spawn(function()
+        while infoCard.Parent do
+            pcall(function()
+                local slaps = player.leaderstats.Slaps.Value
+                local glove = player.leaderstats.Glove.Value
+                infoLabel.Text = "Slaps: " .. tostring(slaps) .. " | Glove: " .. glove
+            end)
+            wait(1)
+        end
+    end)
+    
+    -- Combat Card
+    local c1 = CreateCard(homeTab, 60 * uiScale, "⚔️ Combat")
+    CreateToggle(c1, 0, 32, toggleWidth, "Auto Slap", "autoslap", false, uiScale)
+    CreateToggle(c1, toggleWidth + 8, 32, toggleWidth, "Slap Aura", "slapaura", false, uiScale)
+    CreateSlider(c1, 0, 65, cardWidth - 16, "Aura Range", "aura_range", 15, 5, 50, uiScale)
+    
+    -- Visuals Card
+    local c2 = CreateCard(homeTab, 60 * uiScale + cardHeight + 10, "👁️ Visuals")
+    CreateToggle(c2, 0, 32, toggleWidth, "ESP", "esp", false, uiScale)
+    CreateToggle(c2, toggleWidth + 8, 32, toggleWidth, "Hitbox", "hitbox", false, uiScale)
+    CreateSlider(c2, 0, 65, cardWidth - 16, "Hitbox Size", "hitbox_size", 10, 2, 30, uiScale)
+    
+    tabs["Home"] = homeTab
+    
+    -- COMBAT TAB
+    local combatTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local cm1 = CreateCard(combatTab, 0, "🥊 Combat")
+    CreateToggle(cm1, 0, 32, toggleWidth, "Auto Slap", "autoslap", false, uiScale)
+    CreateToggle(cm1, toggleWidth + 8, 32, toggleWidth, "Slap Aura", "slapaura", false, uiScale)
+    CreateSlider(cm1, 0, 65, cardWidth - 16, "Aura Range", "aura_range", 15, 5, 50, uiScale)
+    
+    local cm2 = CreateCard(combatTab, cardHeight + 10, "🎯 Auto Slapples")
+    CreateToggle(cm2, 0, 32, toggleWidth, "Auto Farm", "autoslapples", false, uiScale)
+    CreateToggle(cm2, toggleWidth + 8, 32, toggleWidth, "Auto Toolbox", "autotoolbox", false, uiScale)
+    
+    tabs["Combat"] = combatTab
+    
+    -- SCRIPT TAB
+    local scriptTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local sc1 = CreateCard(scriptTab, 0, "🍎 Auto Farm")
+    CreateToggle(sc1, 0, 32, toggleWidth, "Auto Slapples", "autoslapples", false, uiScale)
+    CreateToggle(sc1, toggleWidth + 8, 32, toggleWidth, "Auto Toolbox", "autotoolbox", false, uiScale)
+    CreateToggle(sc1, 0, 60, toggleWidth, "Auto Keypad", "autokeypad", false, uiScale)
+    CreateToggle(sc1, toggleWidth + 8, 60, toggleWidth, "Auto Grave", "autograve", false, uiScale)
+    
+    local sc2 = CreateCard(scriptTab, cardHeight + 10, "🎁 Glove")
+    CreateButton(sc2, 0, 32, cardWidth - 16, "Equip Titan Glove", function()
+        pcall(function()
+            for _, v in pairs(game.ReplicatedStorage._NETWORK:GetChildren()) do
+                if v.Name:find("{") then v:FireServer("Titan") end
+            end
+        end)
+    end, uiScale)
+    CreateButton(sc2, 0, 62, cardWidth - 16, "Equip All Gloves", function()
+        pcall(function()
+            for _, v in pairs(game.ReplicatedStorage._NETWORK:GetChildren()) do
+                if v.Name:find("{") then v:FireServer("All") end
+            end
+        end)
+    end, uiScale)
+    
+    tabs["Script"] = scriptTab
+    
+    -- VISUALS TAB
+    local visTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local vc1 = CreateCard(visTab, 0, "👁️ ESP")
+    CreateToggle(vc1, 0, 32, toggleWidth, "Player ESP", "esp", false, uiScale)
+    CreateToggle(vc1, toggleWidth + 8, 32, toggleWidth, "Hitbox", "hitbox", false, uiScale)
+    CreateSlider(vc1, 0, 70, cardWidth - 16, "Hitbox Size", "hitbox_size", 10, 2, 30, uiScale)
+    
+    tabs["Visuals"] = visTab
+    
+    -- PLAYER TAB
+    local plrTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local pc1 = CreateCard(plrTab, 0, "🏃 Movement")
+    CreateToggle(pc1, 0, 32, toggleWidth, "Speed Hack", "speed_hack", false, uiScale)
+    CreateToggle(pc1, toggleWidth + 8, 32, toggleWidth, "Inf Jump", "infjump", false, uiScale)
+    CreateSlider(pc1, 0, 70, cardWidth - 16, "Walk Speed", "walkspeed", 16, 16, 500, uiScale)
+    CreateSlider(pc1, 0, 115, cardWidth - 16, "Jump Power", "jumppower", 50, 50, 500, uiScale)
+    
+    tabs["Player"] = plrTab
+    
+    -- TELEPORT TAB
+    local tpTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local tpCard = CreateCard(tpTab, 0, "🌍 Locations")
+    CreateButton(tpCard, 0, 32, cardWidth - 16, "📍 Safespot", function()
+        pcall(function() player.Character.HumanoidRootPart.CFrame = CFrame.new(10000, 10, 10000) end)
+    end, uiScale)
+    CreateButton(tpCard, 0, 62, cardWidth - 16, "📍 Lobby", function()
+        pcall(function() player.Character.HumanoidRootPart.CFrame = CFrame.new(-800, 328, -2.5) end)
+    end, uiScale)
+    CreateButton(tpCard, 0, 92, cardWidth - 16, "📍 Arena", function()
+        pcall(function() player.Character.HumanoidRootPart.CFrame = workspace.Origo.CFrame * CFrame.new(0, -5, 0) end)
+    end, uiScale)
+    CreateButton(tpCard, 0, 122, cardWidth - 16, "📍 Plate", function()
+        pcall(function() player.Character.HumanoidRootPart.CFrame = workspace.Arena.Plate.CFrame end)
+    end, uiScale)
+    
+    local tpCard2 = CreateCard(tpTab, cardHeight + 10, "👤 Player TP")
+    CreateInput(tpCard2, 0, 32, cardWidth - 16, "Username", "tp_player", "Enter name", uiScale)
+    CreateButton(tpCard2, 0, 70, cardWidth - 16, "Teleport", function()
+        pcall(function()
+            local t = Players:FindFirstChild(inputValues["tp_player"])
+            if t and t.Character then
+                player.Character.HumanoidRootPart.CFrame = t.Character.HumanoidRootPart.CFrame
+            end
+        end)
+    end, uiScale)
+    
+    tabs["Teleport"] = tpTab
+    
+    -- MISC TAB
+    local miscTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local mc1 = CreateCard(miscTab, 0, "🛡️ Protections")
+    CreateToggle(mc1, 0, 32, toggleWidth, "Anti AFK", "antiafk", true, uiScale)
+    CreateToggle(mc1, toggleWidth + 8, 32, toggleWidth, "Anti Admin", "antiadmin", false, uiScale)
+    CreateToggle(mc1, 0, 60, toggleWidth, "Anti Kick", "antikick", false, uiScale)
+    CreateToggle(mc1, toggleWidth + 8, 60, toggleWidth, "Anti Ragdoll", "antiragdoll", false, uiScale)
+    
+    local mc2 = CreateCard(miscTab, cardHeight + 10, "💀 Anti-Glove")
+    CreateToggle(mc2, 0, 32, toggleWidth, "Anti Rock", "antirock", false, uiScale)
+    CreateToggle(mc2, toggleWidth + 8, 32, toggleWidth, "Anti Ice", "antiice", false, uiScale)
+    CreateToggle(mc2, 0, 60, toggleWidth, "Anti Stun", "antistun", false, uiScale)
+    CreateToggle(mc2, toggleWidth + 8, 60, toggleWidth, "Anti Knock", "antiknock", false, uiScale)
+    
+    tabs["Misc"] = miscTab
+    
+    -- UPDATES TAB
+    local upTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 25),
+        Position = UDim2.new(0, 10, 0, 5),
+        BackgroundTransparency = 1,
+        Text = "v2.0 - Slap Battles",
+        TextColor3 = Config.Accent, TextSize = 14,
+        Font = Enum.Font.GothamBlack,
+        Parent = upTab
+    })
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, -20, 1, -40),
+        Position = UDim2.new(0, 10, 0, 35),
+        BackgroundTransparency = 1,
+        Text = "✅ Features:\n• Auto Slap / Aura\n• Auto Slapples\n• ESP + Hitbox\n• Speed/Jump/InfJump\n• Anti AFK/Admin/Kick\n• Anti Rock/Ice/Stun\n• Teleport locations\n• Glove Auto-Equip",
+        TextColor3 = Config.TextDim, TextSize = 11 * uiScale,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        Parent = upTab
+    })
+    
+    tabs["Updates"] = upTab
+    
+    -- SETTINGS TAB
+    local setTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local stc1 = CreateCard(setTab, 0, "⚙️ Settings")
+    CreateButton(stc1, 0, 32, (cardWidth - 16)/2 - 4, "Unload", function() ScreenGui:Destroy() end, uiScale)
+    CreateButton(stc1, (cardWidth - 16)/2 + 4, 32, (cardWidth - 16)/2 - 4, "Rejoin", function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId, player)
+    end, uiScale)
+    
+    tabs["Settings"] = setTab
+    
+    -- CREDITS TAB
+    local credTab = Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1, Visible = false, Parent = scroll
+    })
+    
+    local credCard = Make("Frame", {
+        Size = UDim2.new(1, 0, 0, 180 * uiScale),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Config.Card,
+        BorderSizePixel = 1,
+        BorderColor3 = Config.CardBorder,
+        Parent = credTab
+    })
+    AddCorner(credCard, 6)
+    AddPadding(credCard, 10, 10, 10, 10)
+    
+    Make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 25),
+        BackgroundTransparency = 1,
+        Text = "⭐ Credits ⭐",
+        TextColor3 = Config.Accent, TextSize = 16,
+        Font = Enum.Font.GothamBlack,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Parent = credCard
+    })
+    
+    local credImg = Make("Frame", {
+        Size = UDim2.new(0.4, 0, 0, 50),
+        Position = UDim2.new(0.3, 0, 0, 30),
+        BackgroundTransparency = 1, Parent = credCard
+    })
+    LoadImage(credImg, Config.TabImages["Credits"], UDim2.new(1, 0, 1, 0), "⭐")
+    
+    local credits = {{"🎨 SilentMG", "GUI"}, {"💻 SilentYosF", "Script"}, {"🚀 You!", "User"}}
+    local yc = 90
+    for _, cr in ipairs(credits) do
+        Make("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 18),
+            Position = UDim2.new(0, 0, 0, yc),
+            BackgroundTransparency = 1,
+            Text = cr[1], TextColor3 = Config.Text,
+            TextSize = 12, Font = Enum.Font.GothamBold,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            Parent = credCard
+        })
+        yc = yc + 24
+    end
+    
+    tabs["Credits"] = credTab
+    
+    -- Tab switching
+    local function switchTab(name)
+        for n, t in pairs(tabs) do t.Visible = (n == name) end
+        for n, btn in pairs(tabButtons) do
+            if n == name then
+                Tween(btn, {BackgroundColor3 = Config.Accent}, 0.2)
+            else
+                Tween(btn, {BackgroundColor3 = Config.SidebarBtn}, 0.2)
+            end
+        end
+    end
+    
+    for name, btn in pairs(tabButtons) do
+        btn.MouseButton1Click:Connect(function() switchTab(name) end)
+    end
+    switchTab("Home")
+    
+    -- Bottom bar
+    local bottomBar = Make("Frame", {
+        Size = UDim2.new(1, -sidebarW, 0, 40 * uiScale),
+        Position = UDim2.new(0, sidebarW, 1, -40 * uiScale),
+        BackgroundColor3 = Config.BottomBar,
+        BorderSizePixel = 0, Parent = mainFrame
+    })
+    
+    local avatar = Make("ImageLabel", {
+        Size = UDim2.new(0, 26 * uiScale, 0, 26 * uiScale),
+        Position = UDim2.new(0, 6, 0.5, -13 * uiScale),
+        BackgroundColor3 = Color3.fromRGB(40, 40, 50),
+        BorderSizePixel = 0, Parent = bottomBar
+    })
+    AddCorner(avatar, 13)
+    pcall(function()
+        avatar.Image = Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+    end)
+    
+    Make("TextLabel", {
+        Size = UDim2.new(0, 200, 1, 0),
+        Position = UDim2.new(0, 38, 0, 0),
+        BackgroundTransparency = 1,
+        Text = player.Name,
+        TextColor3 = Config.Text, TextSize = 12 * uiScale,
+        Font = Enum.Font.SourceSansBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = bottomBar
+    })
+    
+    isGUIVisible = true
+    mainFrame.Visible = true
+end
+
+-- ==================== FEATURES ====================
+
+-- Auto Slap
+task.spawn(function()
+    while true do
+        if toggleStates["autoslap"] then
+            pcall(function()
+                for _, t in pairs(Players:GetPlayers()) do
+                    if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
+                        if t.Character.Humanoid.Health > 0 then
+                            Fire(game.ReplicatedStorage.b, t.Character.HumanoidRootPart)
+                        end
+                    end
+                end
+            end)
+        end
+        wait(0.1)
+    end
+end)
+
+-- Slap Aura
+task.spawn(function()
+    while true do
+        if toggleStates["slapaura"] then
+            pcall(function()
+                for _, t in pairs(Players:GetPlayers()) do
+                    if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
+                        if t.Character.Humanoid.Health > 0 then
+                            local dist = (player.Character.HumanoidRootPart.Position - t.Character.HumanoidRootPart.Position).Magnitude
+                            if dist <= (sliderValues["aura_range"] or 15) then
+                                Fire(game.ReplicatedStorage.b, t.Character.HumanoidRootPart)
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        wait()
+    end
+end)
+
+-- ESP
+task.spawn(function()
+    while true do
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= player and p.Character and p.Character:FindFirstChild("Head") then
+                if toggleStates["esp"] then
+                    if not p.Character.Head:FindFirstChild("SilentESP") then
+                        local gui = Make("BillboardGui", {
+                            Name = "SilentESP",
+                            Adornee = p.Character.Head,
+                            Size = UDim2.new(0, 100, 0, 50),
+                            StudsOffset = Vector3.new(0, 2, 0),
+                            AlwaysOnTop = true,
+                            Parent = p.Character.Head
+                        })
+                        Make("TextLabel", {
+                            Size = UDim2.new(1, 0, 1, 0),
+                            BackgroundTransparency = 1,
+                            Text = p.Name,
+                            TextColor3 = Config.Accent,
+                            TextSize = 12,
+                            TextStrokeTransparency = 0,
+                            Font = Enum.Font.GothamBold,
+                            Parent = gui
+                        })
+                    end
+                else
+                    local existing = p.Character.Head:FindFirstChild("SilentESP")
+                    if existing then existing:Destroy() end
+                end
+            end
+        end
+        wait(1)
+    end
+end)
+
+-- Hitbox
+task.spawn(function()
+    while true do
+        local size = sliderValues["hitbox_size"] or 10
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                if toggleStates["hitbox"] then
+                    p.Character.HumanoidRootPart.Size = Vector3.new(size, size, size)
+                    p.Character.HumanoidRootPart.Transparency = 0.75
+                else
+                    p.Character.HumanoidRootPart.Size = Vector3.new(2, 2, 2)
+                    p.Character.HumanoidRootPart.Transparency = 1
+                end
+            end
+        end
+        wait()
+    end
+end)
+
+-- WalkSpeed
+task.spawn(function()
+    while true do
+        if toggleStates["speed_hack"] then
+            pcall(function()
+                if player.Character and player.Character:FindFirstChild("Humanoid") then
+                    player.Character.Humanoid.WalkSpeed = sliderValues["walkspeed"] or 16
+                end
+            end)
+        end
+        wait(0.5)
+    end
+end)
+
+-- Inf Jump
+UIS.JumpRequest:Connect(function()
+    if toggleStates["infjump"] then
+        pcall(function()
+            if player.Character and player.Character:FindFirstChild("Humanoid") then
+                player.Character.Humanoid:ChangeState("Jumping")
+            end
+        end)
+    end
+end)
+
+-- Anti AFK
+player.Idled:Connect(function()
+    if toggleStates["antiafk"] then
+        game:GetService("VirtualUser"):CaptureController()
+        game:GetService("VirtualUser"):ClickButton2(Vector2.new())
+    end
+end)
+
+-- Anti Admin
+task.spawn(function()
+    while true do
+        if toggleStates["antiadmin"] then
+            pcall(function()
+                for _, p in pairs(Players:GetPlayers()) do
+                    if p ~= player and p:GetRankInGroup(9950771) >= 2 then
+                        player:Kick("Admin")
+                        return
+                    end
+                end
+            end)
+        end
+        wait(2)
+    end
+end)
+
+-- Anti Rock
+task.spawn(function()
+    while true do
+        if toggleStates["antirock"] then
+            pcall(function()
+                for _, p in pairs(Players:GetPlayers()) do
+                    if p.Character and p.Character:FindFirstChild("rock") then
+                        p.Character.rock.CanTouch = false
+                    end
+                end
+            end)
+        end
+        wait()
+    end
+end)
+
+-- Anti Ice
+task.spawn(function()
+    while true do
+        if toggleStates["antiice"] and player.Character then
+            pcall(function()
+                for _, v in pairs(player.Character:GetChildren()) do
+                    if v.Name == "Icecube" then
+                        v:Destroy()
+                    end
+                end
+            end)
+        end
+        wait()
+    end
+end)
+
+-- Auto Slapples
+task.spawn(function()
+    while true do
+        if toggleStates["autoslapples"] then
+            pcall(function()
+                if player.Character and player.Character:FindFirstChild("entered") then
+                    local island = workspace:FindFirstChild("Arena") and workspace.Arena:FindFirstChild("island5")
+                    if island then
+                        local slapples = island:FindFirstChild("Slapples")
+                        if slapples then
+                            for _, s in pairs(slapples:GetChildren()) do
+                                if (s.Name == "Slapple" or s.Name == "GoldenSlapple") and s:FindFirstChild("Glove") then
+                                    local touch = s.Glove:FindFirstChildWhichIsA("TouchTransmitter")
+                                    if touch then
+                                        Fire(touch, player.Character.HumanoidRootPart, 0)
+                                        Fire(touch, player.Character.HumanoidRootPart, 1)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        wait(0.5)
+    end
+end)
+
+-- Auto Toolbox
+task.spawn(function()
+    while true do
+        if toggleStates["autotoolbox"] and workspace:FindFirstChild("Toolbox") then
+            pcall(function()
+                for _, v in pairs(workspace:GetDescendants()) do
+                    if v.Name == "Toolbox" and v:FindFirstChild("ClickDetector") then
+                        fireclickdetector(v.ClickDetector)
+                    end
+                end
+            end)
+        end
+        wait()
+    end
+end)
+
+-- ==================== TOGGLE BUTTON ====================
+
+local function CreateToggleButton()
+    if player.PlayerGui:FindFirstChild("SilentToggleBtn") then
+        player.PlayerGui.SilentToggleBtn:Destroy()
+    end
+    
+    local ToggleGui = Make("ScreenGui", {
+        Name = "SilentToggleBtn",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 999,
+        Parent = player.PlayerGui
+    })
+    
+    local btnSize = Config.ToggleButtonSize
+    local BtnContainer = Make("Frame", {
+        Size = UDim2.new(0, btnSize + 20, 0, btnSize + 20),
+        Position = UDim2.new(0, 10, 0.5, -(btnSize + 20)/2),
+        BackgroundTransparency = 1,
+        Parent = ToggleGui
+    })
+    
+    local CircleBg = Make("Frame", {
+        Size = UDim2.new(0, btnSize, 0, btnSize),
+        Position = UDim2.new(0.5, -btnSize/2, 0.5, -btnSize/2),
+        BackgroundColor3 = Color3.fromRGB(15, 15, 25),
+        BorderSizePixel = 2,
+        BorderColor3 = Config.Accent,
+        Parent = BtnContainer
+    })
+    AddCorner(CircleBg, btnSize / 2)
+    
+    local Button = Make("ImageButton", {
+        Name = "ToggleBtn",
+        Size = UDim2.new(0, btnSize - 8, 0, btnSize - 8),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        Image = Config.ToggleImageOn,
+        ScaleType = Enum.ScaleType.Fit,
+        Parent = CircleBg
+    })
+    AddCorner(Button, (btnSize - 8) / 2)
+    
+    local dragging = false
+    local dragStart, startPos
+    local dragDistance = 0
+    
+    Button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = BtnContainer.Position
+            dragDistance = 0
+        end
+    end)
+    
+    Button.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            dragDistance = math.sqrt(delta.X^2 + delta.Y^2)
+            if dragDistance > 5 then
+                BtnContainer.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + delta.X,
+                    startPos.Y.Scale, startPos.Y.Offset + delta.Y
+                )
+            end
+        end
+    end)
+    
+    Button.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            local wasDragging = dragDistance > 10
+            dragging = false
+            dragDistance = 0
+            if not wasDragging then
+                isGUIVisible = not isGUIVisible
+                Button.Image = isGUIVisible and Config.ToggleImageOn or Config.ToggleImageOff
+                if MainGUIMainFrame and MainGUIMainFrame.Parent then
+                    MainGUIMainFrame.Visible = isGUIVisible
+                end
+            end
+        end
+    end)
+    
+    Button.MouseButton2Click:Connect(function()
+        if MainGUIMainFrame and MainGUIMainFrame.Parent then
+            MainGUIMainFrame.Parent:Destroy()
+        end
+        ToggleGui:Destroy()
+    end)
+end
+
+-- ==================== START ====================
+
+print("🔑 Loading SilentSnipers...")
+ShowKeySystem(function()
+    print("✅ Key accepted! Loading GUI...")
+    ShowMainGUI()
+    CreateToggleButton()
+    print("✅ GUI loaded successfully!")
+end)
