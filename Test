@@ -69,6 +69,50 @@ local Config = {
     Input = Color3.fromRGB(20, 22, 28)
 }
 
+-- ==================== ERROR HANDLING ====================
+local LOG_PREFIX = "[" .. Config.Title .. "]"
+local LOG_THROTTLE = 5
+local lastLogged = {}
+
+local function LogError(context, err)
+    local message = LOG_PREFIX .. " " .. context .. ": " .. tostring(err)
+    local now = os.clock()
+    local previous = lastLogged[message]
+    if previous and now - previous < LOG_THROTTLE then return end
+    lastLogged[message] = now
+    warn(message)
+end
+
+-- Runs fn, logging (instead of discarding) any error. Returns ok, result/err.
+local function Try(context, fn, ...)
+    local results = table.pack(pcall(fn, ...))
+    if not results[1] then
+        LogError(context, results[2])
+        return false, results[2]
+    end
+    return true, table.unpack(results, 2, results.n)
+end
+
+-- Wraps an event callback so a failure is logged instead of vanishing.
+local function Protect(context, fn)
+    return function(...)
+        local results = table.pack(Try(context, fn, ...))
+        if not results[1] then return end
+        return table.unpack(results, 2, results.n)
+    end
+end
+
+-- Background loop whose body cannot kill the thread: errors are logged and
+-- the loop keeps running.
+local function SpawnLoop(context, interval, body)
+    task.spawn(function()
+        while true do
+            Try(context, body)
+            if interval then wait(interval) else wait() end
+        end
+    end)
+end
+
 -- ==================== UTILITIES ====================
 local function Make(class, props)
     local inst = Instance.new(class)
@@ -100,11 +144,18 @@ local function Tween(obj, props, duration)
     return t
 end
 
+local Notify
+
+-- Returns true when the text reached the clipboard, false plus a reason otherwise.
 local function CopyToClipboard(text)
-    pcall(function()
-        if setclipboard then setclipboard(text)
-        elseif toclipboard then toclipboard(text) end
-    end)
+    local clipboard = setclipboard or toclipboard
+    if not clipboard then
+        LogError("CopyToClipboard", "executor exposes no clipboard function")
+        return false, "Clipboard not supported by your executor"
+    end
+    local ok, err = Try("CopyToClipboard", clipboard, text)
+    if not ok then return false, tostring(err) end
+    return true
 end
 
 local function Shake(gui)
@@ -119,7 +170,7 @@ end
 local function LoadImage(parent, imageId, size, fallback)
     local loaded = false
     if imageId and imageId ~= "" then
-        local success = pcall(function()
+        loaded = Try("LoadImage(" .. tostring(imageId) .. ")", function()
             Make("ImageLabel", {
                 Size = size,
                 BackgroundTransparency = 1,
@@ -127,7 +178,6 @@ local function LoadImage(parent, imageId, size, fallback)
                 ScaleType = Enum.ScaleType.Fit,
                 Parent = parent
             })
-            loaded = true
         end)
     end
     if not loaded then
@@ -143,8 +193,46 @@ local function LoadImage(parent, imageId, size, fallback)
     end
 end
 
+-- Surfaces a failure (or confirmation) to the player, not only to the console.
+function Notify(text, isError)
+    if isError then LogError("Notify", text) end
+    local ok = pcall(function()
+        local gui = Make("ScreenGui", {
+            Name = "SilentNotify",
+            ResetOnSpawn = false,
+            IgnoreGuiInset = true,
+            DisplayOrder = 1000,
+            Parent = player.PlayerGui
+        })
+        local label = Make("TextLabel", {
+            Size = UDim2.new(0, math.min(viewport.X * 0.8, 320), 0, 32),
+            Position = UDim2.new(0.5, 0, 0, 12),
+            AnchorPoint = Vector2.new(0.5, 0),
+            BackgroundColor3 = Config.Card,
+            BackgroundTransparency = 0.1,
+            BorderSizePixel = 1,
+            BorderColor3 = isError and Config.Error or Config.Success,
+            Text = text,
+            TextColor3 = isError and Config.Error or Config.Success,
+            TextSize = 12,
+            TextWrapped = true,
+            Font = Enum.Font.GothamBold,
+            Parent = gui
+        })
+        AddCorner(label, 8)
+        task.delay(3, function() gui:Destroy() end)
+    end)
+    if not ok then
+        warn(LOG_PREFIX .. " " .. tostring(text))
+    end
+end
+
 local function Fire(remote, ...)
-    pcall(function() remote:FireServer(...) end)
+    if typeof(remote) ~= "Instance" then
+        LogError("Fire", "remote is missing (got " .. typeof(remote) .. ")")
+        return false
+    end
+    return (Try("Fire(" .. remote.Name .. ")", function(...) remote:FireServer(...) end, ...))
 end
 
 -- ==================== GLOBAL STATE ====================
@@ -360,14 +448,22 @@ local function ShowKeySystem(onSuccess)
     })
     AddCorner(GetKeyBtn, 8)
     
-    GetKeyBtn.MouseButton1Click:Connect(function()
-        CopyToClipboard(Config.KeyLink)
-        GetKeyBtn.Text = "✓  COPIED!"
-        Tween(GetKeyBtn, {BackgroundColor3 = Config.Success, BorderColor3 = Config.Success, TextColor3 = Config.Text}, 0.3)
+    GetKeyBtn.MouseButton1Click:Connect(Protect("GetKeyBtn", function()
+        local copied, reason = CopyToClipboard(Config.KeyLink)
+        if copied then
+            GetKeyBtn.Text = "✓  COPIED!"
+            Tween(GetKeyBtn, {BackgroundColor3 = Config.Success, BorderColor3 = Config.Success, TextColor3 = Config.Text}, 0.3)
+        else
+            GetKeyBtn.Text = "✗  COPY FAILED"
+            Tween(GetKeyBtn, {BackgroundColor3 = Config.Error, BorderColor3 = Config.Error, TextColor3 = Config.Text}, 0.3)
+            ErrorLabel.Text = "✗ " .. reason .. " — link: " .. Config.KeyLink
+            ErrorLabel.TextColor3 = Config.Error
+            ErrorLabel.Visible = true
+        end
         wait(1.5)
         GetKeyBtn.Text = "🔗  GET KEY"
         Tween(GetKeyBtn, {BackgroundColor3 = Config.Card, BorderColor3 = Config.Accent, TextColor3 = Config.Accent}, 0.3)
-    end)
+    end))
     yPos = yPos + btnH + 6 * s
     
     -- Login button
@@ -447,14 +543,17 @@ local function ShowKeySystem(onSuccess)
             Parent = btn
         })
         if callback then
-            btn.MouseButton1Click:Connect(callback)
+            btn.MouseButton1Click:Connect(Protect("KeySystemInfoBtn(" .. text .. ")", callback))
         end
     end
     
     local halfW = (winWidth - 36 * s) / 2
     MakeInfoBtn(0, halfW, "🎮", Config.Creator, Config.Accent)
     MakeInfoBtn(halfW + 6 * s, halfW, "💬", "Discord", Color3.fromRGB(88, 101, 242), function()
-        CopyToClipboard(Config.DiscordLink)
+        local copied, reason = CopyToClipboard(Config.DiscordLink)
+        ErrorLabel.Text = copied and ("✓ Discord link copied") or ("✗ " .. reason .. " — " .. Config.DiscordLink)
+        ErrorLabel.TextColor3 = copied and Config.Success or Config.Error
+        ErrorLabel.Visible = true
     end)
     
     -- Footer
@@ -472,7 +571,7 @@ local function ShowKeySystem(onSuccess)
     Tween(Main, {Size = UDim2.new(0, winWidth, 0, winHeight)}, 0.6, Enum.EasingStyle.Back)
     
     -- Login logic
-    LoginBtn.MouseButton1Click:Connect(function()
+    LoginBtn.MouseButton1Click:Connect(Protect("LoginBtn", function()
         local key = KeyInput.Text:gsub("%s+", "")
         if key == "" then
             ErrorLabel.Text = "⚠ Enter a key!"
@@ -490,13 +589,25 @@ local function ShowKeySystem(onSuccess)
         if status == "active" then
             LoginBtn.Text = "✓  SUCCESS!"
             Tween(LoginBtn, {BackgroundColor3 = Config.Success}, 0.3)
-            pcall(function() if writefile then writefile("SilentSnipers_Key.txt", key) end end)
+            if writefile then
+                local saved = Try("SaveKey", writefile, "SilentSnipers_Key.txt", key)
+                if not saved then
+                    ErrorLabel.Text = "⚠ Key accepted but could not be saved"
+                    ErrorLabel.TextColor3 = Config.Warning
+                    ErrorLabel.Visible = true
+                end
+            end
             wait(1)
             Tween(Main, {Size = UDim2.new(0, winWidth, 0, 0), BackgroundTransparency = 1}, 0.5, Enum.EasingStyle.Back)
             wait(0.6)
             ScreenGui:Destroy()
             wait(0.2)
-            if onSuccess then onSuccess() end
+            if onSuccess then
+                local ok, err = Try("onKeySuccess", onSuccess)
+                if not ok then
+                    Notify("Failed to load the hub: " .. tostring(err), true)
+                end
+            end
         elseif status == "expired" then
             LoginBtn.Text = "⏰  EXPIRED"
             Tween(LoginBtn, {BackgroundColor3 = Config.Warning}, 0.3)
@@ -525,14 +636,21 @@ local function ShowKeySystem(onSuccess)
             LoginBtn.Text = "✓  LOGIN"
             Tween(LoginBtn, {BackgroundColor3 = Config.Accent}, 0.3)
         end
-    end)
+    end))
     
     -- Load saved key
-    pcall(function()
-        if readfile and isfile and isfile("SilentSnipers_Key.txt") then
-            KeyInput.Text = readfile("SilentSnipers_Key.txt")
+    if readfile and isfile then
+        local ok, existing = Try("LoadSavedKey", function()
+            if isfile("SilentSnipers_Key.txt") then return readfile("SilentSnipers_Key.txt") end
+        end)
+        if ok and existing then
+            KeyInput.Text = existing
+        elseif not ok then
+            ErrorLabel.Text = "⚠ Saved key could not be read"
+            ErrorLabel.TextColor3 = Config.Warning
+            ErrorLabel.Visible = true
         end
-    end)
+    end
 end
 
 -- ==================== COMPONENT FUNCTIONS ====================
@@ -573,12 +691,12 @@ local function CreateToggle(parent, x, y, width, label, key, default, scale)
     
     toggleStates[key] = default or false
     
-    btn.MouseButton1Click:Connect(function()
+    btn.MouseButton1Click:Connect(Protect("Toggle(" .. key .. ")", function()
         local state = not toggleStates[key]
         toggleStates[key] = state
         Tween(btn, {BackgroundColor3 = state and Config.Accent or Config.AccentDim}, 0.2)
         Tween(knob, {Position = state and UDim2.new(1, -12 * scale, 0.5, -5 * scale) or UDim2.new(0, 2, 0.5, -5 * scale)}, 0.2)
-    end)
+    end))
 end
 
 local function CreateSlider(parent, x, y, width, label, key, default, minV, maxV, scale)
@@ -637,7 +755,7 @@ local function CreateSlider(parent, x, y, width, label, key, default, minV, maxV
     
     knob.MouseButton1Down:Connect(function() dragging = true end)
     
-    UIS.InputChanged:Connect(function(input)
+    UIS.InputChanged:Connect(Protect("Slider(" .. key .. ")", function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local p = math.clamp((UIS:GetMouseLocation().X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
             local v = math.floor(minV + p * (maxV - minV))
@@ -646,7 +764,7 @@ local function CreateSlider(parent, x, y, width, label, key, default, minV, maxV
             valTxt.Text = tostring(v)
             sliderValues[key] = v
         end
-    end)
+    end))
     
     UIS.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -669,7 +787,9 @@ local function CreateButton(parent, x, y, width, label, callback, scale)
         Parent = parent
     })
     AddCorner(btn, 4)
-    if callback then btn.MouseButton1Click:Connect(callback) end
+    if callback then
+        btn.MouseButton1Click:Connect(Protect("Button(" .. label .. ")", callback))
+    end
 end
 
 local function CreateInput(parent, x, y, width, label, key, placeholder, scale)
@@ -766,7 +886,7 @@ local function ShowMainGUI()
     
     -- Background
     if Config.MainGUIBackground ~= "" then
-        pcall(function()
+        Try("MainGUIBackground", function()
             Make("ImageLabel", {
                 Name = "Background",
                 Size = UDim2.new(1, 0, 1, 0),
@@ -962,11 +1082,19 @@ local function ShowMainGUI()
     
     task.spawn(function()
         while infoCard.Parent do
-            pcall(function()
-                local slaps = player.leaderstats.Slaps.Value
-                local glove = player.leaderstats.Glove.Value
-                infoLabel.Text = "Slaps: " .. tostring(slaps) .. " | Glove: " .. glove
+            local ok, err = Try("PlayerInfo", function()
+                local stats = player:FindFirstChild("leaderstats")
+                if not stats then error("leaderstats not found", 0) end
+                local slaps = stats.Slaps.Value
+                local glove = stats.Glove.Value
+                infoLabel.Text = "Slaps: " .. tostring(slaps) .. " | Glove: " .. tostring(glove)
             end)
+            if not ok then
+                infoLabel.Text = "Stats unavailable: " .. tostring(err)
+                infoLabel.TextColor3 = Config.Warning
+            else
+                infoLabel.TextColor3 = Config.Accent
+            end
             wait(1)
         end
     end)
@@ -1015,19 +1143,25 @@ local function ShowMainGUI()
     CreateToggle(sc1, toggleWidth + 8, 60, toggleWidth, "Auto Grave", "autograve", false, uiScale)
     
     local sc2 = CreateCard(scriptTab, cardHeight + 10, "🎁 Glove")
+    local function EquipGlove(which)
+        local network = game.ReplicatedStorage:FindFirstChild("_NETWORK")
+        if not network then
+            Notify("Equip failed: _NETWORK remote folder not found", true)
+            return
+        end
+        local fired = false
+        for _, v in pairs(network:GetChildren()) do
+            if v.Name:find("{") and Fire(v, which) then fired = true end
+        end
+        if not fired then
+            Notify("Equip failed: no glove remote responded", true)
+        end
+    end
     CreateButton(sc2, 0, 32, cardWidth - 16, "Equip Titan Glove", function()
-        pcall(function()
-            for _, v in pairs(game.ReplicatedStorage._NETWORK:GetChildren()) do
-                if v.Name:find("{") then v:FireServer("Titan") end
-            end
-        end)
+        EquipGlove("Titan")
     end, uiScale)
     CreateButton(sc2, 0, 62, cardWidth - 16, "Equip All Gloves", function()
-        pcall(function()
-            for _, v in pairs(game.ReplicatedStorage._NETWORK:GetChildren()) do
-                if v.Name:find("{") then v:FireServer("All") end
-            end
-        end)
+        EquipGlove("All")
     end, uiScale)
     
     tabs["Script"] = scriptTab
@@ -1065,29 +1199,57 @@ local function ShowMainGUI()
         BackgroundTransparency = 1, Visible = false, Parent = scroll
     })
     
+    -- Teleports report why they failed instead of doing nothing.
+    local function TeleportTo(name, getCFrame)
+        local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if not root then
+            Notify("Teleport to " .. name .. " failed: character not loaded", true)
+            return
+        end
+        local ok, target = Try("Teleport(" .. name .. ")", getCFrame)
+        if not ok or typeof(target) ~= "CFrame" then
+            Notify("Teleport to " .. name .. " failed: destination not found", true)
+            return
+        end
+        local moved = Try("Teleport(" .. name .. ")", function() root.CFrame = target end)
+        if not moved then
+            Notify("Teleport to " .. name .. " failed", true)
+        end
+    end
+    
     local tpCard = CreateCard(tpTab, 0, "🌍 Locations")
     CreateButton(tpCard, 0, 32, cardWidth - 16, "📍 Safespot", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = CFrame.new(10000, 10, 10000) end)
+        TeleportTo("Safespot", function() return CFrame.new(10000, 10, 10000) end)
     end, uiScale)
     CreateButton(tpCard, 0, 62, cardWidth - 16, "📍 Lobby", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = CFrame.new(-800, 328, -2.5) end)
+        TeleportTo("Lobby", function() return CFrame.new(-800, 328, -2.5) end)
     end, uiScale)
     CreateButton(tpCard, 0, 92, cardWidth - 16, "📍 Arena", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = workspace.Origo.CFrame * CFrame.new(0, -5, 0) end)
+        TeleportTo("Arena", function() return workspace.Origo.CFrame * CFrame.new(0, -5, 0) end)
     end, uiScale)
     CreateButton(tpCard, 0, 122, cardWidth - 16, "📍 Plate", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = workspace.Arena.Plate.CFrame end)
+        TeleportTo("Plate", function() return workspace.Arena.Plate.CFrame end)
     end, uiScale)
     
     local tpCard2 = CreateCard(tpTab, cardHeight + 10, "👤 Player TP")
     CreateInput(tpCard2, 0, 32, cardWidth - 16, "Username", "tp_player", "Enter name", uiScale)
     CreateButton(tpCard2, 0, 70, cardWidth - 16, "Teleport", function()
-        pcall(function()
-            local t = Players:FindFirstChild(inputValues["tp_player"])
-            if t and t.Character then
-                player.Character.HumanoidRootPart.CFrame = t.Character.HumanoidRootPart.CFrame
-            end
-        end)
+        local name = inputValues["tp_player"]
+        if not name or name == "" then
+            Notify("Teleport failed: enter a username first", true)
+            return
+        end
+        local target = Players:FindFirstChild(name)
+        if not target then
+            Notify("Teleport failed: player '" .. name .. "' not found", true)
+            return
+        end
+        local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if not targetRoot then
+            Notify("Teleport failed: " .. name .. " has no loaded character", true)
+            return
+        end
+        TeleportTo(name, function() return targetRoot.CFrame end)
     end, uiScale)
     
     tabs["Teleport"] = tpTab
@@ -1151,7 +1313,12 @@ local function ShowMainGUI()
     local stc1 = CreateCard(setTab, 0, "⚙️ Settings")
     CreateButton(stc1, 0, 32, (cardWidth - 16)/2 - 4, "Unload", function() ScreenGui:Destroy() end, uiScale)
     CreateButton(stc1, (cardWidth - 16)/2 + 4, 32, (cardWidth - 16)/2 - 4, "Rejoin", function()
-        game:GetService("TeleportService"):Teleport(game.PlaceId, player)
+        local ok, err = Try("Rejoin", function()
+            game:GetService("TeleportService"):Teleport(game.PlaceId, player)
+        end)
+        if not ok then
+            Notify("Rejoin failed: " .. tostring(err), true)
+        end
     end, uiScale)
     
     tabs["Settings"] = setTab
@@ -1220,7 +1387,7 @@ local function ShowMainGUI()
     end
     
     for name, btn in pairs(tabButtons) do
-        btn.MouseButton1Click:Connect(function() switchTab(name) end)
+        btn.MouseButton1Click:Connect(Protect("SwitchTab(" .. name .. ")", function() switchTab(name) end))
     end
     switchTab("Home")
     
@@ -1239,7 +1406,7 @@ local function ShowMainGUI()
         BorderSizePixel = 0, Parent = bottomBar
     })
     AddCorner(avatar, 13)
-    pcall(function()
+    Try("AvatarThumbnail", function()
         avatar.Image = Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
     end)
     
@@ -1261,222 +1428,177 @@ end
 -- ==================== FEATURES ====================
 
 -- Auto Slap
-task.spawn(function()
-    while true do
-        if toggleStates["autoslap"] then
-            pcall(function()
-                for _, t in pairs(Players:GetPlayers()) do
-                    if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
-                        if t.Character.Humanoid.Health > 0 then
-                            Fire(game.ReplicatedStorage.b, t.Character.HumanoidRootPart)
-                        end
-                    end
-                end
-            end)
+SpawnLoop("AutoSlap", 0.1, function()
+    if not toggleStates["autoslap"] then return end
+    local slapRemote = game.ReplicatedStorage:FindFirstChild("b")
+    if not slapRemote then error("slap remote 'b' not found in ReplicatedStorage", 0) end
+    for _, t in pairs(Players:GetPlayers()) do
+        if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
+            local humanoid = t.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                Fire(slapRemote, t.Character.HumanoidRootPart)
+            end
         end
-        wait(0.1)
     end
 end)
 
 -- Slap Aura
-task.spawn(function()
-    while true do
-        if toggleStates["slapaura"] then
-            pcall(function()
-                for _, t in pairs(Players:GetPlayers()) do
-                    if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
-                        if t.Character.Humanoid.Health > 0 then
-                            local dist = (player.Character.HumanoidRootPart.Position - t.Character.HumanoidRootPart.Position).Magnitude
-                            if dist <= (sliderValues["aura_range"] or 15) then
-                                Fire(game.ReplicatedStorage.b, t.Character.HumanoidRootPart)
-                            end
-                        end
-                    end
+SpawnLoop("SlapAura", nil, function()
+    if not toggleStates["slapaura"] then return end
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local slapRemote = game.ReplicatedStorage:FindFirstChild("b")
+    if not slapRemote then error("slap remote 'b' not found in ReplicatedStorage", 0) end
+    for _, t in pairs(Players:GetPlayers()) do
+        if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
+            local humanoid = t.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                local dist = (root.Position - t.Character.HumanoidRootPart.Position).Magnitude
+                if dist <= (sliderValues["aura_range"] or 15) then
+                    Fire(slapRemote, t.Character.HumanoidRootPart)
                 end
-            end)
+            end
         end
-        wait()
     end
 end)
 
 -- ESP
-task.spawn(function()
-    while true do
-        for _, p in pairs(Players:GetPlayers()) do
-            if p ~= player and p.Character and p.Character:FindFirstChild("Head") then
-                if toggleStates["esp"] then
-                    if not p.Character.Head:FindFirstChild("SilentESP") then
-                        local gui = Make("BillboardGui", {
-                            Name = "SilentESP",
-                            Adornee = p.Character.Head,
-                            Size = UDim2.new(0, 100, 0, 50),
-                            StudsOffset = Vector3.new(0, 2, 0),
-                            AlwaysOnTop = true,
-                            Parent = p.Character.Head
-                        })
-                        Make("TextLabel", {
-                            Size = UDim2.new(1, 0, 1, 0),
-                            BackgroundTransparency = 1,
-                            Text = p.Name,
-                            TextColor3 = Config.Accent,
-                            TextSize = 12,
-                            TextStrokeTransparency = 0,
-                            Font = Enum.Font.GothamBold,
-                            Parent = gui
-                        })
-                    end
-                else
-                    local existing = p.Character.Head:FindFirstChild("SilentESP")
-                    if existing then existing:Destroy() end
+SpawnLoop("ESP", 1, function()
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("Head") then
+            if toggleStates["esp"] then
+                if not p.Character.Head:FindFirstChild("SilentESP") then
+                    local gui = Make("BillboardGui", {
+                        Name = "SilentESP",
+                        Adornee = p.Character.Head,
+                        Size = UDim2.new(0, 100, 0, 50),
+                        StudsOffset = Vector3.new(0, 2, 0),
+                        AlwaysOnTop = true,
+                        Parent = p.Character.Head
+                    })
+                    Make("TextLabel", {
+                        Size = UDim2.new(1, 0, 1, 0),
+                        BackgroundTransparency = 1,
+                        Text = p.Name,
+                        TextColor3 = Config.Accent,
+                        TextSize = 12,
+                        TextStrokeTransparency = 0,
+                        Font = Enum.Font.GothamBold,
+                        Parent = gui
+                    })
                 end
+            else
+                local existing = p.Character.Head:FindFirstChild("SilentESP")
+                if existing then existing:Destroy() end
             end
         end
-        wait(1)
     end
 end)
 
 -- Hitbox
-task.spawn(function()
-    while true do
-        local size = sliderValues["hitbox_size"] or 10
-        for _, p in pairs(Players:GetPlayers()) do
-            if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-                if toggleStates["hitbox"] then
-                    p.Character.HumanoidRootPart.Size = Vector3.new(size, size, size)
-                    p.Character.HumanoidRootPart.Transparency = 0.75
-                else
-                    p.Character.HumanoidRootPart.Size = Vector3.new(2, 2, 2)
-                    p.Character.HumanoidRootPart.Transparency = 1
-                end
+SpawnLoop("Hitbox", nil, function()
+    local size = sliderValues["hitbox_size"] or 10
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            if toggleStates["hitbox"] then
+                p.Character.HumanoidRootPart.Size = Vector3.new(size, size, size)
+                p.Character.HumanoidRootPart.Transparency = 0.75
+            else
+                p.Character.HumanoidRootPart.Size = Vector3.new(2, 2, 2)
+                p.Character.HumanoidRootPart.Transparency = 1
             end
         end
-        wait()
     end
 end)
 
 -- WalkSpeed
-task.spawn(function()
-    while true do
-        if toggleStates["speed_hack"] then
-            pcall(function()
-                if player.Character and player.Character:FindFirstChild("Humanoid") then
-                    player.Character.Humanoid.WalkSpeed = sliderValues["walkspeed"] or 16
-                end
-            end)
-        end
-        wait(0.5)
+SpawnLoop("WalkSpeed", 0.5, function()
+    if not toggleStates["speed_hack"] then return end
+    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = sliderValues["walkspeed"] or 16
     end
 end)
 
 -- Inf Jump
-UIS.JumpRequest:Connect(function()
-    if toggleStates["infjump"] then
-        pcall(function()
-            if player.Character and player.Character:FindFirstChild("Humanoid") then
-                player.Character.Humanoid:ChangeState("Jumping")
-            end
-        end)
+UIS.JumpRequest:Connect(Protect("InfJump", function()
+    if not toggleStates["infjump"] then return end
+    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     end
-end)
+end))
 
 -- Anti AFK
-player.Idled:Connect(function()
-    if toggleStates["antiafk"] then
-        game:GetService("VirtualUser"):CaptureController()
-        game:GetService("VirtualUser"):ClickButton2(Vector2.new())
-    end
-end)
+player.Idled:Connect(Protect("AntiAFK", function()
+    if not toggleStates["antiafk"] then return end
+    local virtualUser = game:GetService("VirtualUser")
+    virtualUser:CaptureController()
+    virtualUser:ClickButton2(Vector2.new())
+end))
 
 -- Anti Admin
-task.spawn(function()
-    while true do
-        if toggleStates["antiadmin"] then
-            pcall(function()
-                for _, p in pairs(Players:GetPlayers()) do
-                    if p ~= player and p:GetRankInGroup(9950771) >= 2 then
-                        player:Kick("Admin")
-                        return
-                    end
-                end
-            end)
+SpawnLoop("AntiAdmin", 2, function()
+    if not toggleStates["antiadmin"] then return end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player and p:GetRankInGroup(9950771) >= 2 then
+            player:Kick("Admin")
+            return
         end
-        wait(2)
     end
 end)
 
 -- Anti Rock
-task.spawn(function()
-    while true do
-        if toggleStates["antirock"] then
-            pcall(function()
-                for _, p in pairs(Players:GetPlayers()) do
-                    if p.Character and p.Character:FindFirstChild("rock") then
-                        p.Character.rock.CanTouch = false
-                    end
-                end
-            end)
+SpawnLoop("AntiRock", nil, function()
+    if not toggleStates["antirock"] then return end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p.Character and p.Character:FindFirstChild("rock") then
+            p.Character.rock.CanTouch = false
         end
-        wait()
     end
 end)
 
 -- Anti Ice
-task.spawn(function()
-    while true do
-        if toggleStates["antiice"] and player.Character then
-            pcall(function()
-                for _, v in pairs(player.Character:GetChildren()) do
-                    if v.Name == "Icecube" then
-                        v:Destroy()
-                    end
-                end
-            end)
+SpawnLoop("AntiIce", nil, function()
+    if not (toggleStates["antiice"] and player.Character) then return end
+    for _, v in pairs(player.Character:GetChildren()) do
+        if v.Name == "Icecube" then
+            v:Destroy()
         end
-        wait()
     end
 end)
 
 -- Auto Slapples
-task.spawn(function()
-    while true do
-        if toggleStates["autoslapples"] then
-            pcall(function()
-                if player.Character and player.Character:FindFirstChild("entered") then
-                    local island = workspace:FindFirstChild("Arena") and workspace.Arena:FindFirstChild("island5")
-                    if island then
-                        local slapples = island:FindFirstChild("Slapples")
-                        if slapples then
-                            for _, s in pairs(slapples:GetChildren()) do
-                                if (s.Name == "Slapple" or s.Name == "GoldenSlapple") and s:FindFirstChild("Glove") then
-                                    local touch = s.Glove:FindFirstChildWhichIsA("TouchTransmitter")
-                                    if touch then
-                                        Fire(touch, player.Character.HumanoidRootPart, 0)
-                                        Fire(touch, player.Character.HumanoidRootPart, 1)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end)
+SpawnLoop("AutoSlapples", 0.5, function()
+    if not toggleStates["autoslapples"] then return end
+    if not (player.Character and player.Character:FindFirstChild("entered")) then return end
+    local root = player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local arena = workspace:FindFirstChild("Arena")
+    local island = arena and arena:FindFirstChild("island5")
+    local slapples = island and island:FindFirstChild("Slapples")
+    if not slapples then return end
+    for _, s in pairs(slapples:GetChildren()) do
+        if (s.Name == "Slapple" or s.Name == "GoldenSlapple") and s:FindFirstChild("Glove") then
+            local touch = s.Glove:FindFirstChildWhichIsA("TouchTransmitter")
+            if touch then
+                Fire(touch, root, 0)
+                Fire(touch, root, 1)
+            end
         end
-        wait(0.5)
     end
 end)
 
 -- Auto Toolbox
-task.spawn(function()
-    while true do
-        if toggleStates["autotoolbox"] and workspace:FindFirstChild("Toolbox") then
-            pcall(function()
-                for _, v in pairs(workspace:GetDescendants()) do
-                    if v.Name == "Toolbox" and v:FindFirstChild("ClickDetector") then
-                        fireclickdetector(v.ClickDetector)
-                    end
-                end
-            end)
+SpawnLoop("AutoToolbox", nil, function()
+    if not (toggleStates["autotoolbox"] and workspace:FindFirstChild("Toolbox")) then return end
+    if not fireclickdetector then
+        error("executor does not support fireclickdetector", 0)
+    end
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v.Name == "Toolbox" and v:FindFirstChild("ClickDetector") then
+            fireclickdetector(v.ClickDetector)
         end
-        wait()
     end
 end)
 
@@ -1529,16 +1651,16 @@ local function CreateToggleButton()
     local dragStart, startPos
     local dragDistance = 0
     
-    Button.InputBegan:Connect(function(input)
+    Button.InputBegan:Connect(Protect("ToggleBtnInputBegan", function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
             startPos = BtnContainer.Position
             dragDistance = 0
         end
-    end)
+    end))
     
-    Button.InputChanged:Connect(function(input)
+    Button.InputChanged:Connect(Protect("ToggleBtnInputChanged", function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = input.Position - dragStart
             dragDistance = math.sqrt(delta.X^2 + delta.Y^2)
@@ -1549,9 +1671,9 @@ local function CreateToggleButton()
                 )
             end
         end
-    end)
+    end))
     
-    Button.InputEnded:Connect(function(input)
+    Button.InputEnded:Connect(Protect("ToggleBtnInputEnded", function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             local wasDragging = dragDistance > 10
             dragging = false
@@ -1564,22 +1686,34 @@ local function CreateToggleButton()
                 end
             end
         end
-    end)
+    end))
     
-    Button.MouseButton2Click:Connect(function()
+    Button.MouseButton2Click:Connect(Protect("ToggleBtnUnload", function()
         if MainGUIMainFrame and MainGUIMainFrame.Parent then
             MainGUIMainFrame.Parent:Destroy()
         end
         ToggleGui:Destroy()
-    end)
+    end))
 end
 
 -- ==================== START ====================
 
 print("🔑 Loading SilentSnipers...")
-ShowKeySystem(function()
+
+local started, startErr = Try("ShowKeySystem", ShowKeySystem, function()
     print("✅ Key accepted! Loading GUI...")
-    ShowMainGUI()
-    CreateToggleButton()
+    local guiOk, guiErr = Try("ShowMainGUI", ShowMainGUI)
+    if not guiOk then
+        Notify("Main GUI failed to load: " .. tostring(guiErr), true)
+        return
+    end
+    local btnOk, btnErr = Try("CreateToggleButton", CreateToggleButton)
+    if not btnOk then
+        Notify("Toggle button failed to load: " .. tostring(btnErr), true)
+    end
     print("✅ GUI loaded successfully!")
 end)
+
+if not started then
+    Notify("SilentSnipers failed to start: " .. tostring(startErr), true)
+end
