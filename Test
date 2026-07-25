@@ -44,10 +44,18 @@ local Config = {
     -- Tab Names
     TabNames = {"Home", "Combat", "Script", "Visuals", "Player", "Teleport", "Misc", "Updates", "Settings", "Credits"},
     
-    -- Keys
-    ActiveKeys = {"Test", "PREMIUM-AAAA-BBBB-CCCC", "DEV-KEY-FOR-TESTING"},
-    ExpiredKeys = {"OLD-EXPIRED-KEY"},
-    BannedKeys = {"BANNED-KEY"},
+    -- Keys are stored as salted SHA-256 digests of the uppercased key.
+    -- Add a key with: print(Sha256(Config.KeySalt .. "MY-KEY":upper()))
+    KeySalt = "SilentSnipers::v2::",
+    ActiveKeyHashes = {
+        "3a6df1fa66d975d526feb5ac6f952103a955fd6a060456b7c674cf334628ad6e"
+    },
+    ExpiredKeyHashes = {
+        "46bc7763ef6cdb268b467cb775a9d7650736d17b7b1ff9a0e9dd283bd6a78066"
+    },
+    BannedKeyHashes = {
+        "50b7fdf2e360439a8cb5a35cd70a9d830ca20e6442e91487f1b1e00b4e5fd5b9"
+    },
     
     -- Colors
     Bg = Color3.fromRGB(5, 6, 7),
@@ -156,18 +164,98 @@ local isGUIVisible = false
 
 -- ==================== KEY SYSTEM ====================
 
-local function CheckKeyStatus(key)
-    key = key:upper()
-    for _, k in ipairs(Config.ActiveKeys) do
-        if k:upper() == key then return "active" end
+local band, bxor, bnot = bit32.band, bit32.bxor, bit32.bnot
+local rrotate, rshift, lshift = bit32.rrotate, bit32.rshift, bit32.lshift
+
+local SHA_K = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+}
+
+local function Sha256(message)
+    local h = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    }
+
+    local len = #message
+    message = message .. "\128" .. string.rep("\0", (55 - len) % 64)
+    local bitLen = len * 8
+    local lenBytes = ""
+    for i = 7, 0, -1 do
+        lenBytes = lenBytes .. string.char(math.floor(bitLen / 2 ^ (8 * i)) % 256)
     end
-    for _, k in ipairs(Config.ExpiredKeys) do
-        if k:upper() == key then return "expired" end
+    message = message .. lenBytes
+
+    local w = {}
+    for chunk = 1, #message, 64 do
+        for i = 0, 15 do
+            local a, b, c, d = message:byte(chunk + i * 4, chunk + i * 4 + 3)
+            w[i + 1] = lshift(a, 24) + lshift(b, 16) + lshift(c, 8) + d
+        end
+        for i = 17, 64 do
+            local s0 = bxor(rrotate(w[i - 15], 7), rrotate(w[i - 15], 18), rshift(w[i - 15], 3))
+            local s1 = bxor(rrotate(w[i - 2], 17), rrotate(w[i - 2], 19), rshift(w[i - 2], 10))
+            w[i] = band(w[i - 16] + s0 + w[i - 7] + s1, 0xffffffff)
+        end
+
+        local a, b, c, d, e, f, g, hh = h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]
+        for i = 1, 64 do
+            local S1 = bxor(rrotate(e, 6), rrotate(e, 11), rrotate(e, 25))
+            local ch = bxor(band(e, f), band(bnot(e), g))
+            local t1 = band(hh + S1 + ch + SHA_K[i] + w[i], 0xffffffff)
+            local S0 = bxor(rrotate(a, 2), rrotate(a, 13), rrotate(a, 22))
+            local maj = bxor(band(a, b), band(a, c), band(b, c))
+            local t2 = band(S0 + maj, 0xffffffff)
+            hh, g, f, e, d, c, b, a = g, f, e, band(d + t1, 0xffffffff), c, b, a, band(t1 + t2, 0xffffffff)
+        end
+
+        h[1], h[2], h[3], h[4] = band(h[1] + a, 0xffffffff), band(h[2] + b, 0xffffffff), band(h[3] + c, 0xffffffff), band(h[4] + d, 0xffffffff)
+        h[5], h[6], h[7], h[8] = band(h[5] + e, 0xffffffff), band(h[6] + f, 0xffffffff), band(h[7] + g, 0xffffffff), band(h[8] + hh, 0xffffffff)
     end
-    for _, k in ipairs(Config.BannedKeys) do
-        if k:upper() == key then return "banned" end
+
+    local out = {}
+    for i = 1, 8 do out[i] = string.format("%08x", h[i]) end
+    return table.concat(out)
+end
+
+local function HashKey(key)
+    return Sha256(Config.KeySalt .. key:upper())
+end
+
+local function StatusForHash(hash)
+    for _, h in ipairs(Config.ActiveKeyHashes) do
+        if h == hash then return "active" end
+    end
+    for _, h in ipairs(Config.ExpiredKeyHashes) do
+        if h == hash then return "expired" end
+    end
+    for _, h in ipairs(Config.BannedKeyHashes) do
+        if h == hash then return "banned" end
     end
     return "invalid"
+end
+
+local function CheckKeyStatus(key)
+    return StatusForHash(HashKey(key))
+end
+
+local KeyTokenFile = "SilentSnipers_Key.token"
+
+local function SavedKeyStatus()
+    local status = "invalid"
+    pcall(function()
+        if readfile and isfile and isfile(KeyTokenFile) then
+            status = StatusForHash(readfile(KeyTokenFile))
+        end
+    end)
+    return status
 end
 
 local function ShowKeySystem(onSuccess)
@@ -490,7 +578,7 @@ local function ShowKeySystem(onSuccess)
         if status == "active" then
             LoginBtn.Text = "✓  SUCCESS!"
             Tween(LoginBtn, {BackgroundColor3 = Config.Success}, 0.3)
-            pcall(function() if writefile then writefile("SilentSnipers_Key.txt", key) end end)
+            pcall(function() if writefile then writefile(KeyTokenFile, HashKey(key)) end end)
             wait(1)
             Tween(Main, {Size = UDim2.new(0, winWidth, 0, 0), BackgroundTransparency = 1}, 0.5, Enum.EasingStyle.Back)
             wait(0.6)
@@ -527,10 +615,10 @@ local function ShowKeySystem(onSuccess)
         end
     end)
     
-    -- Load saved key
+    -- Drop any key saved in plaintext by an older version
     pcall(function()
-        if readfile and isfile and isfile("SilentSnipers_Key.txt") then
-            KeyInput.Text = readfile("SilentSnipers_Key.txt")
+        if delfile and isfile and isfile("SilentSnipers_Key.txt") then
+            delfile("SilentSnipers_Key.txt")
         end
     end)
 end
@@ -1083,8 +1171,10 @@ local function ShowMainGUI()
     CreateInput(tpCard2, 0, 32, cardWidth - 16, "Username", "tp_player", "Enter name", uiScale)
     CreateButton(tpCard2, 0, 70, cardWidth - 16, "Teleport", function()
         pcall(function()
-            local t = Players:FindFirstChild(inputValues["tp_player"])
-            if t and t.Character then
+            local name = tostring(inputValues["tp_player"] or ""):gsub("%s+", "")
+            if name == "" or not name:match("^[%w_]+$") then return end
+            local t = Players:FindFirstChild(name)
+            if t and t:IsA("Player") and t.Character then
                 player.Character.HumanoidRootPart.CFrame = t.Character.HumanoidRootPart.CFrame
             end
         end)
@@ -1577,9 +1667,15 @@ end
 -- ==================== START ====================
 
 print("🔑 Loading SilentSnipers...")
-ShowKeySystem(function()
+local function StartMainGUI()
     print("✅ Key accepted! Loading GUI...")
     ShowMainGUI()
     CreateToggleButton()
     print("✅ GUI loaded successfully!")
-end)
+end
+
+if SavedKeyStatus() == "active" then
+    StartMainGUI()
+else
+    ShowKeySystem(StartMainGUI)
+end
