@@ -147,6 +147,65 @@ local function Fire(remote, ...)
     pcall(function() remote:FireServer(...) end)
 end
 
+local function FireGloveNetwork(gloveName)
+    pcall(function()
+        for _, v in pairs(game.ReplicatedStorage._NETWORK:GetChildren()) do
+            if v.Name:find("{") then v:FireServer(gloveName) end
+        end
+    end)
+end
+
+local function IsPointerPress(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function IsPointerMove(input)
+    return input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function MakeScreenGui(name, props)
+    local existing = player.PlayerGui:FindFirstChild(name)
+    if existing then existing:Destroy() end
+    props = props or {}
+    props.Name = name
+    props.ResetOnSpawn = false
+    props.IgnoreGuiInset = true
+    props.Parent = player.PlayerGui
+    return Make("ScreenGui", props)
+end
+
+local function ForEachOtherPlayer(callback)
+    for _, other in pairs(Players:GetPlayers()) do
+        if other ~= player and other.Character then
+            callback(other, other.Character)
+        end
+    end
+end
+
+local function AliveRootOf(character)
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if root and character:FindFirstChild("Humanoid") and character.Humanoid.Health > 0 then
+        return root
+    end
+end
+
+local function LocalRoot()
+    local character = player.Character
+    return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function LocalHumanoid()
+    local character = player.Character
+    return character and character:FindFirstChild("Humanoid")
+end
+
+local function TeleportTo(cframe)
+    local root = LocalRoot()
+    if root then root.CFrame = cframe end
+end
+
 -- ==================== GLOBAL STATE ====================
 local toggleStates = {}
 local sliderValues = {}
@@ -154,33 +213,44 @@ local inputValues = {}
 local MainGUIMainFrame = nil
 local isGUIVisible = false
 
+-- ==================== TOGGLE LOOPS ====================
+
+local function RunToggleLoop(key, interval, body)
+    task.spawn(function()
+        while true do
+            if toggleStates[key] then
+                pcall(body)
+            end
+            wait(interval)
+        end
+    end)
+end
+
 -- ==================== KEY SYSTEM ====================
+
+local function ListHasKey(list, key)
+    for _, k in ipairs(list) do
+        if k:upper() == key then return true end
+    end
+    return false
+end
+
+local KeyFailures = {
+    expired = {"⏰  EXPIRED", Config.Warning, "⏰ Key expired!"},
+    banned = {"🚫  BANNED", Config.Error, "🚫 Key banned!"},
+    invalid = {"✗  INVALID", Config.Error, "✗ Invalid key!"}
+}
 
 local function CheckKeyStatus(key)
     key = key:upper()
-    for _, k in ipairs(Config.ActiveKeys) do
-        if k:upper() == key then return "active" end
-    end
-    for _, k in ipairs(Config.ExpiredKeys) do
-        if k:upper() == key then return "expired" end
-    end
-    for _, k in ipairs(Config.BannedKeys) do
-        if k:upper() == key then return "banned" end
-    end
+    if ListHasKey(Config.ActiveKeys, key) then return "active" end
+    if ListHasKey(Config.ExpiredKeys, key) then return "expired" end
+    if ListHasKey(Config.BannedKeys, key) then return "banned" end
     return "invalid"
 end
 
 local function ShowKeySystem(onSuccess)
-    if player.PlayerGui:FindFirstChild("SilentKeySystem") then
-        player.PlayerGui.SilentKeySystem:Destroy()
-    end
-    
-    local ScreenGui = Make("ScreenGui", {
-        Name = "SilentKeySystem",
-        ResetOnSpawn = false,
-        IgnoreGuiInset = true,
-        Parent = player.PlayerGui
-    })
+    local ScreenGui = MakeScreenGui("SilentKeySystem")
     
     local winWidth = math.min(viewport.X * 0.92, 380)
     local winHeight = math.min(viewport.Y * 0.75, 480)
@@ -497,29 +567,12 @@ local function ShowKeySystem(onSuccess)
             ScreenGui:Destroy()
             wait(0.2)
             if onSuccess then onSuccess() end
-        elseif status == "expired" then
-            LoginBtn.Text = "⏰  EXPIRED"
-            Tween(LoginBtn, {BackgroundColor3 = Config.Warning}, 0.3)
-            ErrorLabel.Text = "⏰ Key expired!"
-            ErrorLabel.TextColor3 = Config.Warning
-            ErrorLabel.Visible = true
-            wait(2)
-            LoginBtn.Text = "✓  LOGIN"
-            Tween(LoginBtn, {BackgroundColor3 = Config.Accent}, 0.3)
-        elseif status == "banned" then
-            LoginBtn.Text = "🚫  BANNED"
-            Tween(LoginBtn, {BackgroundColor3 = Config.Error}, 0.3)
-            ErrorLabel.Text = "🚫 Key banned!"
-            ErrorLabel.TextColor3 = Config.Error
-            ErrorLabel.Visible = true
-            wait(2)
-            LoginBtn.Text = "✓  LOGIN"
-            Tween(LoginBtn, {BackgroundColor3 = Config.Accent}, 0.3)
         else
-            LoginBtn.Text = "✗  INVALID"
-            Tween(LoginBtn, {BackgroundColor3 = Config.Error}, 0.3)
-            ErrorLabel.Text = "✗ Invalid key!"
-            ErrorLabel.TextColor3 = Config.Error
+            local btnText, color, message = table.unpack(KeyFailures[status] or KeyFailures.invalid)
+            LoginBtn.Text = btnText
+            Tween(LoginBtn, {BackgroundColor3 = color}, 0.3)
+            ErrorLabel.Text = message
+            ErrorLabel.TextColor3 = color
             ErrorLabel.Visible = true
             wait(2)
             LoginBtn.Text = "✓  LOGIN"
@@ -638,7 +691,7 @@ local function CreateSlider(parent, x, y, width, label, key, default, minV, maxV
     knob.MouseButton1Down:Connect(function() dragging = true end)
     
     UIS.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        if dragging and IsPointerMove(input) then
             local p = math.clamp((UIS:GetMouseLocation().X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
             local v = math.floor(minV + p * (maxV - minV))
             fill.Size = UDim2.new(p, 0, 1, 0)
@@ -649,7 +702,7 @@ local function CreateSlider(parent, x, y, width, label, key, default, minV, maxV
     end)
     
     UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if IsPointerPress(input) then
             dragging = false
         end
     end)
@@ -707,7 +760,8 @@ local function CreateInput(parent, x, y, width, label, key, placeholder, scale)
     box.FocusLost:Connect(function() inputValues[key] = box.Text end)
 end
 
-local function CreateCard(parent, y, title, height)
+local function CreateCard(parent, y, title, height, opts)
+    opts = opts or {}
     local card = Make("Frame", {
         Size = UDim2.new(1, 0, 0, height or 100),
         Position = UDim2.new(0, 0, 0, y),
@@ -717,39 +771,40 @@ local function CreateCard(parent, y, title, height)
         Parent = parent
     })
     AddCorner(card, 6)
-    AddPadding(card, 8, 8, 8, 8)
+    local pad = opts.Padding or 8
+    AddPadding(card, pad, pad, pad, pad)
     
-    Make("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 22),
+    local titleLabel = Make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, opts.TitleHeight or 22),
         BackgroundTransparency = 1,
-        Text = title, TextColor3 = Config.Text,
-        TextSize = 14,
-        Font = Enum.Font.SourceSansBold,
-        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = title, TextColor3 = opts.TitleColor or Config.Text,
+        TextSize = opts.TitleSize or 14,
+        Font = opts.TitleFont or Enum.Font.SourceSansBold,
+        TextXAlignment = opts.TitleAlignment or Enum.TextXAlignment.Left,
         Parent = card
     })
-    return card
+    return card, titleLabel
+end
+
+local function CreateTabFrame(parent, visible)
+    return Make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Visible = visible or false,
+        Parent = parent
+    })
 end
 
 -- ==================== MAIN GUI ====================
 
 local function ShowMainGUI()
-    if player.PlayerGui:FindFirstChild("SilentSnipersGUI") then
-        player.PlayerGui.SilentSnipersGUI:Destroy()
-    end
-    
     local baseWidth = isMobile and math.min(viewport.X * 0.92, 360) or math.min(420, viewport.X * 0.9)
     local baseHeight = isMobile and math.min(viewport.Y * 0.85, 550) or baseWidth * (980/1450)
     local cardWidth = baseWidth - 75
     local cardHeight = cardWidth * (470/500)
     local uiScale = baseWidth / 420
     
-    local ScreenGui = Make("ScreenGui", {
-        Name = "SilentSnipersGUI",
-        ResetOnSpawn = false,
-        IgnoreGuiInset = true,
-        Parent = player.PlayerGui
-    })
+    local ScreenGui = MakeScreenGui("SilentSnipersGUI")
     
     local mainFrame = Make("Frame", {
         Name = "MainFrame",
@@ -920,34 +975,33 @@ local function ShowMainGUI()
     
     local toggleWidth = (cardWidth - 24) / 2
     
+    -- Shared card builders (used by both the Home tab and the dedicated tabs)
+    local function BuildCombatCard(parent, y, title)
+        local card = CreateCard(parent, y, title)
+        CreateToggle(card, 0, 32, toggleWidth, "Auto Slap", "autoslap", false, uiScale)
+        CreateToggle(card, toggleWidth + 8, 32, toggleWidth, "Slap Aura", "slapaura", false, uiScale)
+        CreateSlider(card, 0, 65, cardWidth - 16, "Aura Range", "aura_range", 15, 5, 50, uiScale)
+        return card
+    end
+    
+    local function BuildVisualsCard(parent, y, title, espLabel, sliderY)
+        local card = CreateCard(parent, y, title)
+        CreateToggle(card, 0, 32, toggleWidth, espLabel, "esp", false, uiScale)
+        CreateToggle(card, toggleWidth + 8, 32, toggleWidth, "Hitbox", "hitbox", false, uiScale)
+        CreateSlider(card, 0, sliderY, cardWidth - 16, "Hitbox Size", "hitbox_size", 10, 2, 30, uiScale)
+        return card
+    end
+    
+    local function BuildAutoFarmToggles(card)
+        CreateToggle(card, 0, 32, toggleWidth, "Auto Farm", "autoslapples", false, uiScale)
+        CreateToggle(card, toggleWidth + 8, 32, toggleWidth, "Auto Toolbox", "autotoolbox", false, uiScale)
+    end
+    
     -- HOME TAB
-    local homeTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1,
-        Visible = true, Parent = scroll
-    })
+    local homeTab = CreateTabFrame(scroll, true)
     
     -- Player Info Card
-    local infoCard = Make("Frame", {
-        Size = UDim2.new(1, 0, 0, 50 * uiScale),
-        Position = UDim2.new(0, 0, 0, 0),
-        BackgroundColor3 = Config.Card,
-        BorderSizePixel = 1,
-        BorderColor3 = Config.CardBorder,
-        Parent = homeTab
-    })
-    AddCorner(infoCard, 6)
-    AddPadding(infoCard, 8, 8, 8, 8)
-    
-    Make("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 16),
-        BackgroundTransparency = 1,
-        Text = "📊 Player Info",
-        TextColor3 = Config.Text, TextSize = 11,
-        Font = Enum.Font.SourceSansBold,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = infoCard
-    })
+    local infoCard = CreateCard(homeTab, 0, "📊 Player Info", 50 * uiScale, {TitleHeight = 16, TitleSize = 11})
     
     local infoLabel = Make("TextLabel", {
         Size = UDim2.new(1, 0, 0, 18),
@@ -971,42 +1025,21 @@ local function ShowMainGUI()
         end
     end)
     
-    -- Combat Card
-    local c1 = CreateCard(homeTab, 60 * uiScale, "⚔️ Combat")
-    CreateToggle(c1, 0, 32, toggleWidth, "Auto Slap", "autoslap", false, uiScale)
-    CreateToggle(c1, toggleWidth + 8, 32, toggleWidth, "Slap Aura", "slapaura", false, uiScale)
-    CreateSlider(c1, 0, 65, cardWidth - 16, "Aura Range", "aura_range", 15, 5, 50, uiScale)
-    
-    -- Visuals Card
-    local c2 = CreateCard(homeTab, 60 * uiScale + cardHeight + 10, "👁️ Visuals")
-    CreateToggle(c2, 0, 32, toggleWidth, "ESP", "esp", false, uiScale)
-    CreateToggle(c2, toggleWidth + 8, 32, toggleWidth, "Hitbox", "hitbox", false, uiScale)
-    CreateSlider(c2, 0, 65, cardWidth - 16, "Hitbox Size", "hitbox_size", 10, 2, 30, uiScale)
+    BuildCombatCard(homeTab, 60 * uiScale, "⚔️ Combat")
+    BuildVisualsCard(homeTab, 60 * uiScale + cardHeight + 10, "👁️ Visuals", "ESP", 65)
     
     tabs["Home"] = homeTab
     
     -- COMBAT TAB
-    local combatTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local combatTab = CreateTabFrame(scroll)
     
-    local cm1 = CreateCard(combatTab, 0, "🥊 Combat")
-    CreateToggle(cm1, 0, 32, toggleWidth, "Auto Slap", "autoslap", false, uiScale)
-    CreateToggle(cm1, toggleWidth + 8, 32, toggleWidth, "Slap Aura", "slapaura", false, uiScale)
-    CreateSlider(cm1, 0, 65, cardWidth - 16, "Aura Range", "aura_range", 15, 5, 50, uiScale)
-    
-    local cm2 = CreateCard(combatTab, cardHeight + 10, "🎯 Auto Slapples")
-    CreateToggle(cm2, 0, 32, toggleWidth, "Auto Farm", "autoslapples", false, uiScale)
-    CreateToggle(cm2, toggleWidth + 8, 32, toggleWidth, "Auto Toolbox", "autotoolbox", false, uiScale)
+    BuildCombatCard(combatTab, 0, "🥊 Combat")
+    BuildAutoFarmToggles(CreateCard(combatTab, cardHeight + 10, "🎯 Auto Slapples"))
     
     tabs["Combat"] = combatTab
     
     -- SCRIPT TAB
-    local scriptTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local scriptTab = CreateTabFrame(scroll)
     
     local sc1 = CreateCard(scriptTab, 0, "🍎 Auto Farm")
     CreateToggle(sc1, 0, 32, toggleWidth, "Auto Slapples", "autoslapples", false, uiScale)
@@ -1016,40 +1049,23 @@ local function ShowMainGUI()
     
     local sc2 = CreateCard(scriptTab, cardHeight + 10, "🎁 Glove")
     CreateButton(sc2, 0, 32, cardWidth - 16, "Equip Titan Glove", function()
-        pcall(function()
-            for _, v in pairs(game.ReplicatedStorage._NETWORK:GetChildren()) do
-                if v.Name:find("{") then v:FireServer("Titan") end
-            end
-        end)
+        FireGloveNetwork("Titan")
     end, uiScale)
     CreateButton(sc2, 0, 62, cardWidth - 16, "Equip All Gloves", function()
-        pcall(function()
-            for _, v in pairs(game.ReplicatedStorage._NETWORK:GetChildren()) do
-                if v.Name:find("{") then v:FireServer("All") end
-            end
-        end)
+        FireGloveNetwork("All")
     end, uiScale)
     
     tabs["Script"] = scriptTab
     
     -- VISUALS TAB
-    local visTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local visTab = CreateTabFrame(scroll)
     
-    local vc1 = CreateCard(visTab, 0, "👁️ ESP")
-    CreateToggle(vc1, 0, 32, toggleWidth, "Player ESP", "esp", false, uiScale)
-    CreateToggle(vc1, toggleWidth + 8, 32, toggleWidth, "Hitbox", "hitbox", false, uiScale)
-    CreateSlider(vc1, 0, 70, cardWidth - 16, "Hitbox Size", "hitbox_size", 10, 2, 30, uiScale)
+    BuildVisualsCard(visTab, 0, "👁️ ESP", "Player ESP", 70)
     
     tabs["Visuals"] = visTab
     
     -- PLAYER TAB
-    local plrTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local plrTab = CreateTabFrame(scroll)
     
     local pc1 = CreateCard(plrTab, 0, "🏃 Movement")
     CreateToggle(pc1, 0, 32, toggleWidth, "Speed Hack", "speed_hack", false, uiScale)
@@ -1060,24 +1076,20 @@ local function ShowMainGUI()
     tabs["Player"] = plrTab
     
     -- TELEPORT TAB
-    local tpTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local tpTab = CreateTabFrame(scroll)
     
     local tpCard = CreateCard(tpTab, 0, "🌍 Locations")
-    CreateButton(tpCard, 0, 32, cardWidth - 16, "📍 Safespot", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = CFrame.new(10000, 10, 10000) end)
-    end, uiScale)
-    CreateButton(tpCard, 0, 62, cardWidth - 16, "📍 Lobby", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = CFrame.new(-800, 328, -2.5) end)
-    end, uiScale)
-    CreateButton(tpCard, 0, 92, cardWidth - 16, "📍 Arena", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = workspace.Origo.CFrame * CFrame.new(0, -5, 0) end)
-    end, uiScale)
-    CreateButton(tpCard, 0, 122, cardWidth - 16, "📍 Plate", function()
-        pcall(function() player.Character.HumanoidRootPart.CFrame = workspace.Arena.Plate.CFrame end)
-    end, uiScale)
+    local tpLocations = {
+        {"📍 Safespot", function() return CFrame.new(10000, 10, 10000) end},
+        {"📍 Lobby", function() return CFrame.new(-800, 328, -2.5) end},
+        {"📍 Arena", function() return workspace.Origo.CFrame * CFrame.new(0, -5, 0) end},
+        {"📍 Plate", function() return workspace.Arena.Plate.CFrame end}
+    }
+    for i, loc in ipairs(tpLocations) do
+        CreateButton(tpCard, 0, 2 + 30 * i, cardWidth - 16, loc[1], function()
+            pcall(function() TeleportTo(loc[2]()) end)
+        end, uiScale)
+    end
     
     local tpCard2 = CreateCard(tpTab, cardHeight + 10, "👤 Player TP")
     CreateInput(tpCard2, 0, 32, cardWidth - 16, "Username", "tp_player", "Enter name", uiScale)
@@ -1085,7 +1097,7 @@ local function ShowMainGUI()
         pcall(function()
             local t = Players:FindFirstChild(inputValues["tp_player"])
             if t and t.Character then
-                player.Character.HumanoidRootPart.CFrame = t.Character.HumanoidRootPart.CFrame
+                TeleportTo(t.Character.HumanoidRootPart.CFrame)
             end
         end)
     end, uiScale)
@@ -1093,10 +1105,7 @@ local function ShowMainGUI()
     tabs["Teleport"] = tpTab
     
     -- MISC TAB
-    local miscTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local miscTab = CreateTabFrame(scroll)
     
     local mc1 = CreateCard(miscTab, 0, "🛡️ Protections")
     CreateToggle(mc1, 0, 32, toggleWidth, "Anti AFK", "antiafk", true, uiScale)
@@ -1113,10 +1122,7 @@ local function ShowMainGUI()
     tabs["Misc"] = miscTab
     
     -- UPDATES TAB
-    local upTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local upTab = CreateTabFrame(scroll)
     
     Make("TextLabel", {
         Size = UDim2.new(1, -20, 0, 25),
@@ -1143,10 +1149,7 @@ local function ShowMainGUI()
     tabs["Updates"] = upTab
     
     -- SETTINGS TAB
-    local setTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local setTab = CreateTabFrame(scroll)
     
     local stc1 = CreateCard(setTab, 0, "⚙️ Settings")
     CreateButton(stc1, 0, 32, (cardWidth - 16)/2 - 4, "Unload", function() ScreenGui:Destroy() end, uiScale)
@@ -1157,30 +1160,15 @@ local function ShowMainGUI()
     tabs["Settings"] = setTab
     
     -- CREDITS TAB
-    local credTab = Make("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1, Visible = false, Parent = scroll
-    })
+    local credTab = CreateTabFrame(scroll)
     
-    local credCard = Make("Frame", {
-        Size = UDim2.new(1, 0, 0, 180 * uiScale),
-        Position = UDim2.new(0, 0, 0, 0),
-        BackgroundColor3 = Config.Card,
-        BorderSizePixel = 1,
-        BorderColor3 = Config.CardBorder,
-        Parent = credTab
-    })
-    AddCorner(credCard, 6)
-    AddPadding(credCard, 10, 10, 10, 10)
-    
-    Make("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 25),
-        BackgroundTransparency = 1,
-        Text = "⭐ Credits ⭐",
-        TextColor3 = Config.Accent, TextSize = 16,
-        Font = Enum.Font.GothamBlack,
-        TextXAlignment = Enum.TextXAlignment.Center,
-        Parent = credCard
+    local credCard = CreateCard(credTab, 0, "⭐ Credits ⭐", 180 * uiScale, {
+        Padding = 10,
+        TitleHeight = 25,
+        TitleSize = 16,
+        TitleColor = Config.Accent,
+        TitleFont = Enum.Font.GothamBlack,
+        TitleAlignment = Enum.TextXAlignment.Center
     })
     
     local credImg = Make("Frame", {
@@ -1261,76 +1249,59 @@ end
 -- ==================== FEATURES ====================
 
 -- Auto Slap
-task.spawn(function()
-    while true do
-        if toggleStates["autoslap"] then
-            pcall(function()
-                for _, t in pairs(Players:GetPlayers()) do
-                    if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
-                        if t.Character.Humanoid.Health > 0 then
-                            Fire(game.ReplicatedStorage.b, t.Character.HumanoidRootPart)
-                        end
-                    end
-                end
-            end)
+RunToggleLoop("autoslap", 0.1, function()
+    ForEachOtherPlayer(function(_, character)
+        local root = AliveRootOf(character)
+        if root then
+            Fire(game.ReplicatedStorage.b, root)
         end
-        wait(0.1)
-    end
+    end)
 end)
 
 -- Slap Aura
-task.spawn(function()
-    while true do
-        if toggleStates["slapaura"] then
-            pcall(function()
-                for _, t in pairs(Players:GetPlayers()) do
-                    if t ~= player and t.Character and t.Character:FindFirstChild("HumanoidRootPart") then
-                        if t.Character.Humanoid.Health > 0 then
-                            local dist = (player.Character.HumanoidRootPart.Position - t.Character.HumanoidRootPart.Position).Magnitude
-                            if dist <= (sliderValues["aura_range"] or 15) then
-                                Fire(game.ReplicatedStorage.b, t.Character.HumanoidRootPart)
-                            end
-                        end
-                    end
-                end
-            end)
+RunToggleLoop("slapaura", nil, function()
+    local localRoot = LocalRoot()
+    if not localRoot then return end
+    ForEachOtherPlayer(function(_, character)
+        local root = AliveRootOf(character)
+        if root and (localRoot.Position - root.Position).Magnitude <= (sliderValues["aura_range"] or 15) then
+            Fire(game.ReplicatedStorage.b, root)
         end
-        wait()
-    end
+    end)
 end)
 
 -- ESP
 task.spawn(function()
     while true do
-        for _, p in pairs(Players:GetPlayers()) do
-            if p ~= player and p.Character and p.Character:FindFirstChild("Head") then
-                if toggleStates["esp"] then
-                    if not p.Character.Head:FindFirstChild("SilentESP") then
-                        local gui = Make("BillboardGui", {
-                            Name = "SilentESP",
-                            Adornee = p.Character.Head,
-                            Size = UDim2.new(0, 100, 0, 50),
-                            StudsOffset = Vector3.new(0, 2, 0),
-                            AlwaysOnTop = true,
-                            Parent = p.Character.Head
-                        })
-                        Make("TextLabel", {
-                            Size = UDim2.new(1, 0, 1, 0),
-                            BackgroundTransparency = 1,
-                            Text = p.Name,
-                            TextColor3 = Config.Accent,
-                            TextSize = 12,
-                            TextStrokeTransparency = 0,
-                            Font = Enum.Font.GothamBold,
-                            Parent = gui
-                        })
-                    end
-                else
-                    local existing = p.Character.Head:FindFirstChild("SilentESP")
-                    if existing then existing:Destroy() end
+        ForEachOtherPlayer(function(other, character)
+            local head = character:FindFirstChild("Head")
+            if not head then return end
+            if toggleStates["esp"] then
+                if not head:FindFirstChild("SilentESP") then
+                    local gui = Make("BillboardGui", {
+                        Name = "SilentESP",
+                        Adornee = head,
+                        Size = UDim2.new(0, 100, 0, 50),
+                        StudsOffset = Vector3.new(0, 2, 0),
+                        AlwaysOnTop = true,
+                        Parent = head
+                    })
+                    Make("TextLabel", {
+                        Size = UDim2.new(1, 0, 1, 0),
+                        BackgroundTransparency = 1,
+                        Text = other.Name,
+                        TextColor3 = Config.Accent,
+                        TextSize = 12,
+                        TextStrokeTransparency = 0,
+                        Font = Enum.Font.GothamBold,
+                        Parent = gui
+                    })
                 end
+            else
+                local existing = head:FindFirstChild("SilentESP")
+                if existing then existing:Destroy() end
             end
-        end
+        end)
         wait(1)
     end
 end)
@@ -1339,32 +1310,26 @@ end)
 task.spawn(function()
     while true do
         local size = sliderValues["hitbox_size"] or 10
-        for _, p in pairs(Players:GetPlayers()) do
-            if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-                if toggleStates["hitbox"] then
-                    p.Character.HumanoidRootPart.Size = Vector3.new(size, size, size)
-                    p.Character.HumanoidRootPart.Transparency = 0.75
-                else
-                    p.Character.HumanoidRootPart.Size = Vector3.new(2, 2, 2)
-                    p.Character.HumanoidRootPart.Transparency = 1
-                end
+        ForEachOtherPlayer(function(_, character)
+            local root = character:FindFirstChild("HumanoidRootPart")
+            if not root then return end
+            if toggleStates["hitbox"] then
+                root.Size = Vector3.new(size, size, size)
+                root.Transparency = 0.75
+            else
+                root.Size = Vector3.new(2, 2, 2)
+                root.Transparency = 1
             end
-        end
+        end)
         wait()
     end
 end)
 
 -- WalkSpeed
-task.spawn(function()
-    while true do
-        if toggleStates["speed_hack"] then
-            pcall(function()
-                if player.Character and player.Character:FindFirstChild("Humanoid") then
-                    player.Character.Humanoid.WalkSpeed = sliderValues["walkspeed"] or 16
-                end
-            end)
-        end
-        wait(0.5)
+RunToggleLoop("speed_hack", 0.5, function()
+    local humanoid = LocalHumanoid()
+    if humanoid then
+        humanoid.WalkSpeed = sliderValues["walkspeed"] or 16
     end
 end)
 
@@ -1372,9 +1337,8 @@ end)
 UIS.JumpRequest:Connect(function()
     if toggleStates["infjump"] then
         pcall(function()
-            if player.Character and player.Character:FindFirstChild("Humanoid") then
-                player.Character.Humanoid:ChangeState("Jumping")
-            end
+            local humanoid = LocalHumanoid()
+            if humanoid then humanoid:ChangeState("Jumping") end
         end)
     end
 end)
@@ -1388,112 +1352,66 @@ player.Idled:Connect(function()
 end)
 
 -- Anti Admin
-task.spawn(function()
-    while true do
-        if toggleStates["antiadmin"] then
-            pcall(function()
-                for _, p in pairs(Players:GetPlayers()) do
-                    if p ~= player and p:GetRankInGroup(9950771) >= 2 then
-                        player:Kick("Admin")
-                        return
-                    end
-                end
-            end)
+RunToggleLoop("antiadmin", 2, function()
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player and p:GetRankInGroup(9950771) >= 2 then
+            player:Kick("Admin")
+            return
         end
-        wait(2)
     end
 end)
 
 -- Anti Rock
-task.spawn(function()
-    while true do
-        if toggleStates["antirock"] then
-            pcall(function()
-                for _, p in pairs(Players:GetPlayers()) do
-                    if p.Character and p.Character:FindFirstChild("rock") then
-                        p.Character.rock.CanTouch = false
-                    end
-                end
-            end)
+RunToggleLoop("antirock", nil, function()
+    for _, p in pairs(Players:GetPlayers()) do
+        if p.Character and p.Character:FindFirstChild("rock") then
+            p.Character.rock.CanTouch = false
         end
-        wait()
     end
 end)
 
 -- Anti Ice
-task.spawn(function()
-    while true do
-        if toggleStates["antiice"] and player.Character then
-            pcall(function()
-                for _, v in pairs(player.Character:GetChildren()) do
-                    if v.Name == "Icecube" then
-                        v:Destroy()
-                    end
-                end
-            end)
+RunToggleLoop("antiice", nil, function()
+    if not player.Character then return end
+    for _, v in pairs(player.Character:GetChildren()) do
+        if v.Name == "Icecube" then
+            v:Destroy()
         end
-        wait()
     end
 end)
 
 -- Auto Slapples
-task.spawn(function()
-    while true do
-        if toggleStates["autoslapples"] then
-            pcall(function()
-                if player.Character and player.Character:FindFirstChild("entered") then
-                    local island = workspace:FindFirstChild("Arena") and workspace.Arena:FindFirstChild("island5")
-                    if island then
-                        local slapples = island:FindFirstChild("Slapples")
-                        if slapples then
-                            for _, s in pairs(slapples:GetChildren()) do
-                                if (s.Name == "Slapple" or s.Name == "GoldenSlapple") and s:FindFirstChild("Glove") then
-                                    local touch = s.Glove:FindFirstChildWhichIsA("TouchTransmitter")
-                                    if touch then
-                                        Fire(touch, player.Character.HumanoidRootPart, 0)
-                                        Fire(touch, player.Character.HumanoidRootPart, 1)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end)
+RunToggleLoop("autoslapples", 0.5, function()
+    local root = LocalRoot()
+    if not (root and player.Character:FindFirstChild("entered")) then return end
+    local island = workspace:FindFirstChild("Arena") and workspace.Arena:FindFirstChild("island5")
+    local slapples = island and island:FindFirstChild("Slapples")
+    if not slapples then return end
+    for _, s in pairs(slapples:GetChildren()) do
+        if (s.Name == "Slapple" or s.Name == "GoldenSlapple") and s:FindFirstChild("Glove") then
+            local touch = s.Glove:FindFirstChildWhichIsA("TouchTransmitter")
+            if touch then
+                Fire(touch, root, 0)
+                Fire(touch, root, 1)
+            end
         end
-        wait(0.5)
     end
 end)
 
 -- Auto Toolbox
-task.spawn(function()
-    while true do
-        if toggleStates["autotoolbox"] and workspace:FindFirstChild("Toolbox") then
-            pcall(function()
-                for _, v in pairs(workspace:GetDescendants()) do
-                    if v.Name == "Toolbox" and v:FindFirstChild("ClickDetector") then
-                        fireclickdetector(v.ClickDetector)
-                    end
-                end
-            end)
+RunToggleLoop("autotoolbox", nil, function()
+    if not workspace:FindFirstChild("Toolbox") then return end
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v.Name == "Toolbox" and v:FindFirstChild("ClickDetector") then
+            fireclickdetector(v.ClickDetector)
         end
-        wait()
     end
 end)
 
 -- ==================== TOGGLE BUTTON ====================
 
 local function CreateToggleButton()
-    if player.PlayerGui:FindFirstChild("SilentToggleBtn") then
-        player.PlayerGui.SilentToggleBtn:Destroy()
-    end
-    
-    local ToggleGui = Make("ScreenGui", {
-        Name = "SilentToggleBtn",
-        ResetOnSpawn = false,
-        IgnoreGuiInset = true,
-        DisplayOrder = 999,
-        Parent = player.PlayerGui
-    })
+    local ToggleGui = MakeScreenGui("SilentToggleBtn", {DisplayOrder = 999})
     
     local btnSize = Config.ToggleButtonSize
     local BtnContainer = Make("Frame", {
@@ -1530,7 +1448,7 @@ local function CreateToggleButton()
     local dragDistance = 0
     
     Button.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if IsPointerPress(input) then
             dragging = true
             dragStart = input.Position
             startPos = BtnContainer.Position
@@ -1539,7 +1457,7 @@ local function CreateToggleButton()
     end)
     
     Button.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        if dragging and IsPointerMove(input) then
             local delta = input.Position - dragStart
             dragDistance = math.sqrt(delta.X^2 + delta.Y^2)
             if dragDistance > 5 then
@@ -1552,7 +1470,7 @@ local function CreateToggleButton()
     end)
     
     Button.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if IsPointerPress(input) then
             local wasDragging = dragDistance > 10
             dragging = false
             dragDistance = 0
